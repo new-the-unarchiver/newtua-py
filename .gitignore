@@ -1,0 +1,27 @@
+/target
+Cargo.lock.bak
+.DS_Store
+.code-index/
+
+# Local dependency overrides pointing at sibling checkouts. Published manifests
+# carry versions only — see the project README.
+/.cargo/config.toml
+
+# The development-process repository is private; these live there.
+/CLAUDE.md
+/.claude/
+/.superpowers/
+
+# Python build output and the compiled extension. `maturin develop` drops the
+# module straight into the source tree, and it is ~20 MB — never commit it.
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+/dist/
+/build/
+*.egg-info/
+.venv/
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/

@@ -1,0 +1,44 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        # Linux and macOS only. `stream=True` decodes through an OS pipe and
+        # says so on other platforms (NotImplementedError), and the test module
+        # imports `resource`, which POSIX has and Windows does not. Windows
+        # wheels are a separate piece of work, not a matrix entry.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          # The floor the package declares. abi3 means one wheel covers every
+          # later version, so testing the floor is what tells us the floor holds.
+          python-version: "3.11"
+
+      - name: rust fmt
+        run: cargo fmt --all --check
+      - name: rust clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Installed, not built in place: this is the path a user takes, and it is
+      # the only one that proves the wheel's own metadata and layout are right.
+      - name: install the package
+        run: pip install .
+      - name: install the checkers
+        run: pip install pytest mypy ruff
+
+      - name: tests
+        run: pytest tests -q
+      - name: types
+        run: mypy
+      - name: lint
+        run: ruff check python tests

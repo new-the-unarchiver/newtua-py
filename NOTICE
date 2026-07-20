@@ -1,0 +1,40 @@
+newtua (Python bindings) — Python bindings for New The Unarchiver.
+Copyright (C) 2026 Aleksei Trankov and contributors.
+
+Licensed under the GNU Lesser General Public License, version 3 or (at your
+option) any later version. The full license text is in LICENSE (the GNU Lesser
+General Public License v3); it incorporates by reference the GNU General Public
+License v3, provided in GPL-3.0.txt. If you did not receive these, see
+<https://www.gnu.org/licenses/>.
+
+This package is a PyO3 extension module built directly on newtua-core, the
+extraction engine of New The Unarchiver — it does not go through the C ABI that
+the Swift bindings use. The engine's legacy-format decoders are ported from
+XADMaster (© Dag Ågren and contributors, GNU LGPL), which is where the license
+comes from.
+
+The engine is linked statically into the compiled module, but that is not the
+boundary the LGPL cares about: your code never links against it. CPython loads
+newtua/_newtua from a separate file at import time, so installing a modified
+build of this package — your own, or one you rebuilt from source — takes effect
+without touching the program that imports it. That is the replaceability the
+LGPL asks for, and an application using this package remains under a license of
+its own choosing.
+
+Source for this package, and for the engine it embeds, is at
+<https://github.com/new-the-unarchiver>.
+
+RAR support and the UnRAR license. RAR archives are read through libunrar, by
+way of the newtua-unrar fork. The UnRAR sources are not part of this
+repository: Cargo fetches them (as unrar_sys) at build time, and their object
+code is linked into the published wheels. They carry a license of their own
+(© Alexander Roshal) that permits use in any software handling RAR archives,
+but forbids using the code to build a RAR-compatible archiver.
+
+That restriction reaches no user of this software. newtua never creates
+archives — it extracts and lists only — so no RAR compressor can be derived
+from it. The combination is conveyed under section 4 of the LGPL v3, which
+permits a Combined Work under other terms provided the library is identified
+and its license supplied. The UnRAR license text is in UNRAR-LICENSE.txt.
+
+SPDX-License-Identifier: LGPL-3.0-or-later

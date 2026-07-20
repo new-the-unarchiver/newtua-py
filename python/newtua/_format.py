@@ -1,0 +1,71 @@
+"""Container formats the engine can recognise."""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+__all__ = ["Format"]
+
+
+class Format(StrEnum):
+    """Container format of an archive.
+
+    Compares equal to its own string, so `archive.format == "zip"` works as
+    well as `archive.format is Format.ZIP`.
+    """
+
+    SEVENZ = "7z"
+    ALZ = "alz"
+    APFS = "apfs"
+    APK = "apk"
+    APPIMAGE = "appimage"
+    APPLESINGLE = "applesingle"
+    AR = "ar"
+    ARC = "arc"
+    ARJ = "arj"
+    BINHEX = "binhex"
+    BZIP2 = "bzip2"
+    CAB = "cab"
+    COMPACTPRO = "compactpro"
+    CONDA = "conda"
+    CPIO = "cpio"
+    CRUNCH = "crunch"
+    CRX = "crx"
+    DEB = "deb"
+    DMG = "dmg"
+    DMS = "dms"
+    DOCX = "docx"
+    EPUB = "epub"
+    GZIP = "gzip"
+    HFSPLUS = "hfsplus"
+    IPA = "ipa"
+    ISO = "iso"
+    JAR = "jar"
+    LBR = "lbr"
+    LZX = "lzx"
+    MACBINARY = "macbinary"
+    MSI = "msi"
+    NSIS = "nsis"
+    ODP = "odp"
+    ODS = "ods"
+    ODT = "odt"
+    PACKIT = "packit"
+    POWERPACKER = "powerpacker"
+    PPTX = "pptx"
+    RAR = "rar"
+    RAW = "raw"
+    RPM = "rpm"
+    SFX = "sfx"
+    SQUASHFS = "squashfs"
+    SQUEEZE = "squeeze"
+    STUFFIT = "stuffit"
+    STUFFIT5 = "stuffit5"
+    STUFFITX = "stuffitx"
+    TAR = "tar"
+    WARC = "warc"
+    WIM = "wim"
+    XAR = "xar"
+    XLSX = "xlsx"
+    XZ = "xz"
+    ZIP = "zip"
+    ZOO = "zoo"

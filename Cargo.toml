@@ -1,0 +1,34 @@
+[package]
+name = "newtua-py"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "LGPL-3.0-or-later"
+description = "Python bindings for newtua, an in-process archive extractor. Built as a wheel, not a Rust dependency."
+readme = "README.md"
+repository = "https://github.com/new-the-unarchiver/newtua-py"
+keywords = ["archive", "extract", "python", "pyo3", "unarchiver"]
+categories = ["compression", "api-bindings"]
+# The deliverable is the wheel on PyPI, not a crate. Nothing can depend on a
+# `cdylib` built for one Python ABI, so publishing it to crates.io would only
+# occupy a name. Written down rather than merely intended: a bare
+# `cargo publish` would otherwise be the one command that ignores the plan.
+publish = false
+
+[lib]
+# Compiled submodule `newtua._newtua`; the `newtua` package (python/) re-exports it.
+name = "_newtua"
+crate-type = ["cdylib"]
+
+[dependencies]
+newtua-core = "0.1.1"
+# abi3-py311: one wheel per platform across Python >= 3.11. extension-module: do
+# not link libpython (symbols resolved at import) so `cargo build` needs no
+# Python lib and a bare `cargo clippy` just compiles the crate.
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py311"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"

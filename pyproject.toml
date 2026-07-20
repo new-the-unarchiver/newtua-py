@@ -1,0 +1,47 @@
+[build-system]
+# 1.9 is the floor for PEP 639 (`license` as an SPDX expression plus
+# `license-files`). On 1.7/1.8 those fields are ignored, and a copyleft package
+# would ship with no license text at all.
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "newtua"
+dynamic = ["version"]
+description = "Python bindings for newtua — a fast, in-process Rust archive extractor (a rewrite of The Unarchiver)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "LGPL-3.0-or-later"
+# NOTICE explains why the engine may be linked statically without the LGPL
+# asking anything more, and covers the UnRAR terms that ride along with RAR
+# support. UNRAR-LICENSE.txt is that library's own text.
+license-files = ["LICENSE", "GPL-3.0.txt", "NOTICE", "UNRAR-LICENSE.txt"]
+keywords = ["archive", "extract", "zip", "7z", "rar", "tar", "unarchiver"]
+# No `License ::` classifier: PEP 639 deprecates them, and PyPI rejects a
+# distribution that carries both a classifier and an SPDX `license`.
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Archiving",
+]
+
+[project.urls]
+Homepage = "https://github.com/new-the-unarchiver"
+Repository = "https://github.com/new-the-unarchiver/newtua-py"
+
+[tool.maturin]
+# Compiled extension lives at newtua/_newtua; the `newtua` package (python/)
+# re-exports it. abi3 (from the crate's abi3-py311 feature) → one wheel per
+# platform across Python >= 3.11.
+module-name = "newtua._newtua"
+python-source = "python"
+features = ["pyo3/extension-module"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["python/newtua", "tests/typing_sample.py"]
+
+[tool.ruff]
+target-version = "py311"
+src = ["python"]
