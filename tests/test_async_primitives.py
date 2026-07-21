@@ -1,10 +1,15 @@
 import asyncio
+import os
 import pathlib
+
+import pytest
 
 import newtua
 from newtua import _newtua
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+
+posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX pipe path")
 
 
 def test_list_path_matches_sync_listing():
@@ -61,3 +66,13 @@ def test_extract_path_releases_the_gil(tmp_path):
         return ticks
 
     assert asyncio.run(main()) > 0
+
+
+@posix_only
+def test_open_stream_path_matches_sync_stream():
+    archive = str(FIXTURES / "hello.7z")
+    read_fd, write_fd = os.pipe()
+    _newtua.open_stream_path(archive, 0, write_fd, None, None)
+    with os.fdopen(read_fd, "rb") as f:
+        streamed = f.read()
+    assert streamed == _newtua.read_path(archive, 0, None, None)
