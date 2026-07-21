@@ -8,10 +8,11 @@ job's outcome (a Report or the caught exception) is collected.
 import concurrent.futures as cf
 import functools
 import os
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Callable, Iterable, Sequence, TypeVar
+from typing import Any, Callable, Iterable, Sequence, TypeVar
 
 from newtua import _newtua
 from newtua._archive import (
@@ -98,8 +99,51 @@ def _extract_one(job: ExtractJob) -> Report:
 _T = TypeVar("_T")
 
 
+def _gevent_patched_threading() -> bool:
+    """True when gevent has monkeypatched threading. Zero cost when gevent is
+    not even imported."""
+    gevent = sys.modules.get("gevent")
+    if gevent is None:
+        return False
+    try:
+        return bool(gevent.monkey.is_module_patched("threading"))
+    except Exception:
+        return False
+
+
+class _GeventExecutor(cf.Executor):
+    """Adapter presenting a gevent ThreadPool as a concurrent.futures.Executor,
+    so `_run_backend` (which uses `cf.as_completed`) works unchanged. Under
+    monkeypatched threading, cf.Future's condition variables are cooperative."""
+
+    def __init__(self, max_workers: int) -> None:
+        import gevent.threadpool  # type: ignore[import-untyped]
+
+        self._pool = gevent.threadpool.ThreadPool(max_workers)
+
+    def submit(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> "cf.Future[_T]":
+        future: cf.Future[_T] = cf.Future()
+
+        def run() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as exc:  # noqa: BLE001 - forwarded to the future
+                future.set_exception(exc)
+
+        self._pool.spawn(run)
+        return future
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        if wait:
+            self._pool.join()
+
+
 def _make_executor(backend: str, max_workers: int) -> cf.Executor:
     if backend == "thread":
+        if _gevent_patched_threading():
+            return _GeventExecutor(max_workers)  # transparent: real cores under gevent
         return cf.ThreadPoolExecutor(max_workers=max_workers)
     if backend == "process":
         return cf.ProcessPoolExecutor(max_workers=max_workers)

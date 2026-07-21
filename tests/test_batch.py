@@ -123,3 +123,24 @@ def test_extract_many_cancel_stops_submitting(tmp_path):
                        dest=tmp_path / f"out{i}") for i in range(3)]
     results = extract_many(zips, cancel=ev)
     assert len(results) < len(zips)
+
+
+try:
+    import gevent  # noqa: F401
+
+    HAS_GEVENT = True
+except ImportError:
+    HAS_GEVENT = False
+
+needs_gevent = pytest.mark.skipif(not HAS_GEVENT, reason="gevent not installed")
+
+
+@needs_gevent
+def test_extract_many_under_gevent(tmp_path):
+    import gevent.monkey
+    if not gevent.monkey.is_module_patched("threading"):
+        pytest.skip("run this module under `python -m gevent.monkey ...` for full coverage")
+    zips = [ExtractJob(archive=make_two_entry_zip(tmp_path / f"in{i}.zip"),
+                       dest=tmp_path / f"out{i}") for i in range(2)]
+    results = extract_many(zips, backend="thread")
+    assert all(r.error is None for r in results)
