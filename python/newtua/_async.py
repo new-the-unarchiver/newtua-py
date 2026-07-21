@@ -7,6 +7,7 @@ served synchronously — iterating entries is pure Python, never I/O.
 """
 
 import asyncio
+import errno
 import os
 from pathlib import Path, PurePosixPath
 from types import TracebackType
@@ -66,9 +67,24 @@ class AsyncArchive:
         # Spilling bytes/stream to a temp file and reading the listing are both
         # blocking — do them off the loop.
         self._path = await asyncio.to_thread(self._sync._backing_path)
-        raw, fmt, enc = await asyncio.to_thread(
-            _newtua.list_path, str(self._path), self._password, self._encoding
-        )
+        # Check existence ourselves, same reasoning as `Archive._open()`: the
+        # engine reports missing files as NewtuaError(kind="io"), which
+        # raise_for only turns into OSError, and the protocol requires
+        # FileNotFoundError.
+        if self._sync._has_own_path() and not self._path.exists():
+            self._sync.close()  # releases the tempfile claim, if any
+            raise FileNotFoundError(
+                errno.ENOENT, os.strerror(errno.ENOENT), str(self._path)
+            )
+        try:
+            raw, fmt, enc = await asyncio.to_thread(
+                _newtua.list_path, str(self._path), self._password, self._encoding
+            )
+        except Exception as exc:  # compiled module exception
+            # __aexit__ never runs on a failed __aenter__, so release the
+            # spilled temp file (if any) ourselves before propagating.
+            self._sync.close()
+            raise_for(exc)
         # owner=None: metadata-only entries (no reachable blocking entry.read()).
         self._entries, self._by_name = _entries_from_raw(raw, None)
         self._format = fmt

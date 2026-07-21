@@ -56,3 +56,25 @@ def test_async_entries_are_metadata_only():
     entry = run(main())
     with pytest.raises(ValueError, match="not attached"):
         entry.read()
+
+
+def test_async_missing_file_raises_file_not_found():
+    async def main():
+        async with newtua.AsyncArchive("/no/such/file.zip"):
+            pass  # pragma: no cover - __aenter__ must raise first
+
+    with pytest.raises(FileNotFoundError):
+        run(main())
+
+
+def test_async_garbage_file_raises_typed_error(tmp_path):
+    garbage = tmp_path / "garbage.bin"
+    garbage.write_bytes(b"not an archive")
+
+    async def main():
+        async with newtua.AsyncArchive(str(garbage)):
+            pass  # pragma: no cover - __aenter__ must raise first
+
+    with pytest.raises(newtua.UnknownFormatError) as excinfo:
+        run(main())
+    assert isinstance(excinfo.value, newtua.UnknownFormatError)
