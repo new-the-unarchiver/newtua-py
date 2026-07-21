@@ -570,6 +570,76 @@ fn open(path: PathBuf, password: Option<String>, encoding: Option<String>) -> Py
     })
 }
 
+/// Listing snapshot without a live reader: open, collect metadata, drop the
+/// reader. GIL released for the open+scan. Backs `AsyncArchive.__aenter__` and
+/// `list_many`. Returns (entries, format name, detected encoding).
+#[pyfunction]
+#[pyo3(signature = (path, password=None, encoding=None))]
+fn list_path(
+    py: Python<'_>,
+    path: PathBuf,
+    password: Option<String>,
+    encoding: Option<String>,
+) -> PyResult<(Vec<PyEntry>, String, String)> {
+    // Errors cross back as Send parts: `Error` is not guaranteed Send, and the
+    // detached closure's value must be. Same trick as the stream handshake.
+    let collected: Result<(Vec<EntryData>, &'static str, String), (String, &'static str)> = py
+        .detach(move || {
+            let opts = OpenOptions {
+                password,
+                encoding_override: encoding.clone(),
+            };
+            let mut reader =
+                core_open(&path, &opts).map_err(|e| (e.to_string(), error_kind(&e)))?;
+            let entries: Vec<EntryData> = reader
+                .entries()
+                .map_err(|e| (e.to_string(), error_kind(&e)))?
+                .iter()
+                .map(entry_data)
+                .collect();
+            let format = format_name(reader.format());
+            let raw_names: Vec<Vec<u8>> = entries.iter().map(|e| e.raw_name.clone()).collect();
+            let enc = newtua_core::detect_encoding(&raw_names, encoding.as_deref());
+            Ok((entries, format, enc))
+        });
+    match collected {
+        Ok((entries, format, enc)) => {
+            let py_entries = entries.iter().map(|d| PyEntry::from_data(py, d)).collect();
+            Ok((py_entries, format.to_owned(), enc))
+        }
+        Err((message, kind)) => Err(pyerr_from_parts(&message, kind)),
+    }
+}
+
+/// Read one entry to bytes, opening fresh from the path with the GIL released.
+/// Backs `AsyncArchive.read`.
+#[pyfunction]
+#[pyo3(signature = (path, index, password=None, encoding=None))]
+fn read_path<'py>(
+    py: Python<'py>,
+    path: PathBuf,
+    index: usize,
+    password: Option<String>,
+    encoding: Option<String>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let outcome: Result<Vec<u8>, (String, &'static str)> = py.detach(move || {
+        let opts = OpenOptions {
+            password,
+            encoding_override: encoding,
+        };
+        let mut reader = core_open(&path, &opts).map_err(|e| (e.to_string(), error_kind(&e)))?;
+        let mut buf: Vec<u8> = Vec::new();
+        reader
+            .read_entry(index, &mut buf)
+            .map_err(|e| (e.to_string(), error_kind(&e)))?;
+        Ok(buf)
+    });
+    match outcome {
+        Ok(buf) => Ok(PyBytes::new(py, &buf)),
+        Err((message, kind)) => Err(pyerr_from_parts(&message, kind)),
+    }
+}
+
 /// Every format name the engine can report. Used by the Python-side guard.
 #[pyfunction]
 #[pyo3(name = "_all_formats")]
@@ -583,6 +653,8 @@ fn _newtua(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEntry>()?;
     m.add_class::<PyReport>()?;
     m.add_function(wrap_pyfunction!(open, m)?)?;
+    m.add_function(wrap_pyfunction!(list_path, m)?)?;
+    m.add_function(wrap_pyfunction!(read_path, m)?)?;
     m.add_function(wrap_pyfunction!(all_formats, m)?)?;
     m.add("NewtuaError", m.py().get_type::<NewtuaError>())?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
