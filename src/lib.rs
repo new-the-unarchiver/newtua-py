@@ -257,6 +257,28 @@ impl Write for PySink {
     }
 }
 
+/// Wrap a Python progress callable into the engine's `ProgressFn`. Shared by
+/// `Archive::extract` and `extract_path`. The callback re-acquires the GIL via
+/// `Python::attach`, so it is safe to call from inside a `py.detach` closure.
+fn build_progress_fn(cb: Py<PyAny>) -> newtua_core::ProgressFn {
+    Box::new(move |ev: ProgressEvent| -> Flow {
+        let (event, index, path, bytes, size) = match ev {
+            ProgressEvent::EntryStart { index, path, size } => {
+                ("start", index, Some(path.to_owned()), 0u64, size)
+            }
+            ProgressEvent::Bytes { index, written } => ("bytes", index, None, written, 0),
+            ProgressEvent::EntryDone { index } => ("done", index, None, 0, 0),
+        };
+        Python::attach(|py| match cb.call1(py, (event, index, path, bytes, size)) {
+            Ok(ret) => match ret.extract::<bool>(py) {
+                Ok(false) => Flow::Abort,
+                _ => Flow::Continue,
+            },
+            Err(_) => Flow::Abort,
+        })
+    })
+}
+
 /// An open archive. Iterate it for entries, or call `extract`/`read`.
 #[pyclass(unsendable)]
 struct Archive {
@@ -497,28 +519,7 @@ impl Archive {
             .as_deref()
             .and_then(|p| newtua_core::wrapper_name(p, wrapper));
 
-        let progress_fn = progress.map(|cb| {
-            let boxed: newtua_core::ProgressFn = Box::new(move |ev: ProgressEvent| -> Flow {
-                let (event, index, path, bytes, size) = match ev {
-                    ProgressEvent::EntryStart { index, path, size } => {
-                        ("start", index, Some(path.to_owned()), 0u64, size)
-                    }
-                    ProgressEvent::Bytes { index, written } => ("bytes", index, None, written, 0),
-                    ProgressEvent::EntryDone { index } => ("done", index, None, 0, 0),
-                };
-                Python::attach(|py| {
-                    match cb.call1(py, (event, index, path, bytes, size)) {
-                        // Returning False (and only False) cancels.
-                        Ok(ret) => match ret.extract::<bool>(py) {
-                            Ok(false) => Flow::Abort,
-                            _ => Flow::Continue,
-                        },
-                        Err(_) => Flow::Abort,
-                    }
-                })
-            });
-            boxed
-        });
+        let progress_fn = progress.map(build_progress_fn);
 
         let mut opts = ExtractOptions {
             dest,
@@ -640,6 +641,59 @@ fn read_path<'py>(
     }
 }
 
+/// Extract to `dest`, opening fresh from the path with the GIL released. Backs
+/// `AsyncArchive.extract` and `extract_many` (thread backend). Signature mirrors
+/// `Archive::extract`, plus `password`/`encoding` for the re-open.
+#[pyfunction]
+#[pyo3(signature = (path, dest, selection=None, wrapper=true, strict=false, preserve=true, progress=None, name_source=None, password=None, encoding=None))]
+#[allow(clippy::too_many_arguments)]
+fn extract_path(
+    py: Python<'_>,
+    path: PathBuf,
+    dest: PathBuf,
+    selection: Option<Vec<usize>>,
+    wrapper: bool,
+    strict: bool,
+    preserve: bool,
+    progress: Option<Py<PyAny>>,
+    name_source: Option<PathBuf>,
+    password: Option<String>,
+    encoding: Option<String>,
+) -> PyResult<PyReport> {
+    let wrapper_name = name_source
+        .as_deref()
+        .and_then(|p| newtua_core::wrapper_name(p, wrapper));
+    let progress_fn = progress.map(build_progress_fn);
+    let outcome: Result<(usize, usize, bool), (String, &'static str)> = py.detach(move || {
+        let opts_open = OpenOptions {
+            password,
+            encoding_override: encoding,
+        };
+        let mut reader =
+            core_open(&path, &opts_open).map_err(|e| (e.to_string(), error_kind(&e)))?;
+        let mut ex = ExtractOptions {
+            dest,
+            wrapper_name,
+            strict,
+            preserve,
+            selection,
+            progress: progress_fn,
+            keep_macos_metadata: false,
+        };
+        let report = newtua_core::extract_all(&mut *reader, &mut ex)
+            .map_err(|e| (e.to_string(), error_kind(&e)))?;
+        Ok((report.extracted, report.failed.len(), report.aborted))
+    });
+    match outcome {
+        Ok((extracted, failed, aborted)) => Ok(PyReport {
+            extracted,
+            failed,
+            aborted,
+        }),
+        Err((message, kind)) => Err(pyerr_from_parts(&message, kind)),
+    }
+}
+
 /// Every format name the engine can report. Used by the Python-side guard.
 #[pyfunction]
 #[pyo3(name = "_all_formats")]
@@ -655,6 +709,7 @@ fn _newtua(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(open, m)?)?;
     m.add_function(wrap_pyfunction!(list_path, m)?)?;
     m.add_function(wrap_pyfunction!(read_path, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_path, m)?)?;
     m.add_function(wrap_pyfunction!(all_formats, m)?)?;
     m.add("NewtuaError", m.py().get_type::<NewtuaError>())?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

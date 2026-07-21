@@ -1,3 +1,4 @@
+import asyncio
 import pathlib
 
 import newtua
@@ -21,3 +22,42 @@ def test_read_path_matches_sync_read():
     with newtua.Archive(archive) as ar:
         for i in range(len(raw)):
             assert _newtua.read_path(archive, i, None, None) == ar.read(i)
+
+
+def test_extract_path_matches_sync_extract(tmp_path):
+    archive = str(FIXTURES / "hello.7z")
+    a, b = tmp_path / "a", tmp_path / "b"
+    r1 = _newtua.extract_path(archive, str(a), None, True, False, True, None, archive, None, None)
+    with newtua.Archive(archive) as ar:
+        r2 = ar.extract(str(b))
+    assert (r1.extracted, r1.failed, r1.aborted) == (r2.extracted, r2.failed, r2.aborted)
+    # Одинаковое дерево файлов.
+    names_a = sorted(p.relative_to(a).as_posix() for p in a.rglob("*"))
+    names_b = sorted(p.relative_to(b).as_posix() for p in b.rglob("*"))
+    assert names_a == names_b
+
+
+def test_extract_path_releases_the_gil(tmp_path):
+    # Пока extract_path работает в to_thread, событийный цикл должен жить:
+    # счётчик обязан вырасти во время распаковки. Если GIL держится — счётчик
+    # почти не двигается (цикл заморожен).
+    archive = str(FIXTURES / "hello.7z")
+
+    async def main() -> int:
+        ticks = 0
+
+        async def spin() -> None:
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0)
+
+        spinner = asyncio.ensure_future(spin())
+        await asyncio.to_thread(
+            _newtua.extract_path, archive, str(tmp_path / "o"),
+            None, True, False, True, None, archive, None, None,
+        )
+        spinner.cancel()
+        return ticks
+
+    assert asyncio.run(main()) > 0

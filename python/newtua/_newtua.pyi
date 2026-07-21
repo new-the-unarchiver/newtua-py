@@ -58,4 +58,16 @@ def list_path(
 def read_path(
     path: str, index: int, password: str | None = ..., encoding: str | None = ...
 ) -> bytes: ...
+def extract_path(
+    path: str,
+    dest: str,
+    selection: Sequence[int] | None = ...,
+    wrapper: bool = ...,
+    strict: bool = ...,
+    preserve: bool = ...,
+    progress: Callable[[str, int, str | None, int, int], bool | None] | None = ...,
+    name_source: str | None = ...,
+    password: str | None = ...,
+    encoding: str | None = ...,
+) -> Report: ...
 def _all_formats() -> list[str]: ...
