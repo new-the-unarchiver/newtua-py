@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path, PurePosixPath
 from types import TracebackType
-from typing import BinaryIO, Callable, Iterator, Sequence, overload
+from typing import BinaryIO, Callable, Iterator, NoReturn, Sequence, overload
 
 from newtua import _newtua
 from newtua._archive import (
@@ -256,6 +256,13 @@ class AsyncArchive:
         except Exception as exc:
             raise_for(exc)
         return Report(extracted=r.extracted, failed=r.failed, aborted=r.aborted)
+
+    def __reduce__(self) -> NoReturn:
+        raise TypeError(
+            f"{type(self).__name__} objects cannot be sent to another process; "
+            "pass the file path and open it inside the worker "
+            "(e.g. newtua.extract_many(paths, backend='process'))"
+        )
 
 
 class AsyncEntryStream:

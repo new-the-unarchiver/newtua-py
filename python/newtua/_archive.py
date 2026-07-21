@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
 from types import TracebackType
-from typing import IO, BinaryIO, Callable, Iterator, Sequence, overload
+from typing import IO, BinaryIO, Callable, Iterator, NoReturn, Sequence, overload
 
 from newtua import _newtua
 from newtua._entry import Entry, EntryKind
@@ -614,6 +614,13 @@ class Archive:
             # it is still read by at least one stream.
             self._tempfile.release()
             self._tempfile = None
+
+    def __reduce__(self) -> NoReturn:
+        raise TypeError(
+            f"{type(self).__name__} objects cannot be sent to another process; "
+            "pass the file path and open it inside the worker "
+            "(e.g. newtua.extract_many(paths, backend='process'))"
+        )
 
     def __enter__(self) -> 'Archive':
         # `_listing()` opens the reader too; loading entries here rather than

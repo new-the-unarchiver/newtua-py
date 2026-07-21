@@ -1,4 +1,5 @@
 import pathlib
+import pickle
 import threading
 
 import pytest
@@ -101,6 +102,18 @@ def test_list_many_process_backend_maps_errors(tmp_path):
     (result,) = list_many([bad], backend="process")
     assert result.entries is None
     assert isinstance(result.error, newtua.UnknownFormatError)
+
+
+def test_archive_cannot_be_pickled(tmp_path):
+    z = make_two_entry_zip(tmp_path / "in.zip")
+    with pytest.raises(TypeError, match="cannot be sent to another process"):
+        pickle.dumps(newtua.Archive(str(z)))
+
+
+def test_async_archive_cannot_be_pickled(tmp_path):
+    z = make_two_entry_zip(tmp_path / "in.zip")
+    with pytest.raises(TypeError, match="cannot be sent to another process"):
+        pickle.dumps(newtua.AsyncArchive(str(z)))
 
 
 def test_extract_many_cancel_stops_submitting(tmp_path):
