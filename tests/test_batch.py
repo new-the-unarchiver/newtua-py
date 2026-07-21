@@ -1,4 +1,7 @@
 import pathlib
+import threading
+
+import pytest
 
 import newtua
 from newtua._batch import ExtractJob, extract_many, list_many  # B6 переведёт на `from newtua import list_many`
@@ -59,3 +62,32 @@ def test_list_many_matches_sync(tmp_path):
         assert r.error is None
         with newtua.Archive(str(r.archive)) as sync:
             assert [str(e.path) for e in r.entries] == [str(e.path) for e in sync]
+
+
+def test_extract_many_process_backend(tmp_path):
+    zips = [ExtractJob(archive=make_two_entry_zip(tmp_path / f"in{i}.zip"),
+                       dest=tmp_path / f"out{i}") for i in range(3)]
+    results = extract_many(zips, backend="process")
+    assert all(r.error is None and r.report.extracted == 2 for r in results)
+
+
+def test_process_backend_rejects_progress(tmp_path):
+    z = make_two_entry_zip(tmp_path / "in.zip")
+    job = ExtractJob(archive=z, dest=tmp_path / "out", progress=lambda ev: None)
+    with pytest.raises(ValueError, match="progress"):
+        extract_many([job], backend="process")
+
+
+def test_unknown_backend_is_rejected(tmp_path):
+    z = make_two_entry_zip(tmp_path / "in.zip")
+    with pytest.raises(ValueError, match="backend"):
+        extract_many([(z, tmp_path / "out")], backend="nonsense")
+
+
+def test_extract_many_cancel_stops_submitting(tmp_path):
+    ev = threading.Event()
+    ev.set()
+    zips = [ExtractJob(archive=make_two_entry_zip(tmp_path / f"in{i}.zip"),
+                       dest=tmp_path / f"out{i}") for i in range(3)]
+    results = extract_many(zips, cancel=ev)
+    assert len(results) < len(zips)

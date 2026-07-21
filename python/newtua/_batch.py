@@ -6,10 +6,12 @@ job's outcome (a Report or the caught exception) is collected.
 """
 
 import concurrent.futures as cf
+import functools
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Sequence, TypeVar
 
 from newtua import _newtua
 from newtua._archive import (
@@ -90,6 +92,46 @@ def _extract_one(job: ExtractJob) -> Report:
     return Report(extracted=r.extracted, failed=r.failed, aborted=r.aborted)
 
 
+_T = TypeVar("_T")
+
+
+def _make_executor(backend: str, max_workers: int) -> cf.Executor:
+    if backend == "thread":
+        return cf.ThreadPoolExecutor(max_workers=max_workers)
+    if backend == "process":
+        return cf.ProcessPoolExecutor(max_workers=max_workers)
+    raise ValueError(f"unknown backend {backend!r}; use 'thread' or 'process'")
+
+
+def _run_backend(
+    backend: str,
+    max_workers: int | None,
+    tasks: Sequence[tuple[int, Callable[[], _T]]],
+    cancel: "threading.Event | None" = None,
+) -> list[tuple[int, _T | None, BaseException | None]]:
+    """Run `tasks` (index, thunk) on the chosen backend; collect (index, ok, err).
+    Never raises on a single task's failure.
+
+    `cancel`: cooperative "stop submitting new tasks" — checked before each
+    submit. Already-submitted tasks always run to completion; tasks not yet
+    submitted when `cancel` is set are simply absent from the result."""
+    workers = max_workers or os.cpu_count() or 1
+    out: list[tuple[int, _T | None, BaseException | None]] = []
+    with _make_executor(backend, workers) as ex:
+        futures = {}
+        for i, thunk in tasks:
+            if cancel is not None and cancel.is_set():
+                break
+            futures[ex.submit(thunk)] = i
+        for fut in cf.as_completed(futures):
+            i = futures[fut]
+            try:
+                out.append((i, fut.result(), None))
+            except Exception as exc:
+                out.append((i, None, _as_typed(exc)))
+    return out
+
+
 def extract_many(
     jobs: Iterable["ExtractJob | tuple[_ArchiveRef, _ArchiveRef]"],
     *,
@@ -97,30 +139,40 @@ def extract_many(
     max_workers: int | None = None,
     on_result: Callable[[ExtractJob, Report], None] | None = None,
     on_error: Callable[[ExtractJob, BaseException], None] | None = None,
+    cancel: "threading.Event | None" = None,
 ) -> list[BatchResult]:
     """Extract many archives in parallel; never raises on a single failure.
 
     `backend`: "thread" (default, GIL released → real cores) or "process".
-    Callbacks fire as each job finishes; under the thread backend they may run
-    on a worker thread — keep them thread-safe.
+    `backend="process"` rejects any job with a per-job `progress` callback
+    up front, with a `ValueError`, before submitting anything.
+
+    `on_result`/`on_error` are called from the calling thread, once all
+    results have been collected (order follows completion order via
+    `as_completed`). Only per-job `progress` runs on a worker thread.
+
+    `cancel`: an optional `threading.Event`. If set, stops submitting new
+    jobs (already-submitted jobs finish normally); cancelled jobs are simply
+    absent from the returned list.
     """
     normalised = [_normalise_job(j) for j in jobs]
-    workers = max_workers or os.cpu_count() or 1
+    if backend == "process":
+        for job in normalised:
+            if job.progress is not None:
+                raise ValueError(
+                    "progress callbacks are not supported with backend='process'; "
+                    "use backend='thread'"
+                )
+    tasks = [(i, functools.partial(_extract_one, job)) for i, job in enumerate(normalised)]
+    raw = _run_backend(backend, max_workers, tasks, cancel)
     results: list[BatchResult | None] = [None] * len(normalised)
-    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_extract_one, job): (i, job) for i, job in enumerate(normalised)}
-        for fut in cf.as_completed(futures):
-            i, job = futures[fut]
-            try:
-                report = fut.result()
-                results[i] = BatchResult(job, report, None)
-                if on_result is not None:
-                    on_result(job, report)
-            except Exception as exc:
-                mapped = _as_typed(exc)
-                results[i] = BatchResult(job, None, mapped)
-                if on_error is not None:
-                    on_error(job, mapped)
+    for i, report, error in raw:
+        job = normalised[i]
+        results[i] = BatchResult(job, report, error)
+        if error is None and on_result is not None:
+            on_result(job, report)  # type: ignore[arg-type]
+        elif error is not None and on_error is not None:
+            on_error(job, error)
     return [r for r in results if r is not None]
 
 
@@ -149,28 +201,34 @@ def list_many(
     max_workers: int | None = None,
     on_result: Callable[[_ArchiveRef, tuple[Entry, ...]], None] | None = None,
     on_error: Callable[[_ArchiveRef, BaseException], None] | None = None,
+    cancel: "threading.Event | None" = None,
 ) -> list[ListingResult]:
-    """List many archives in parallel; never raises on a single failure."""
+    """List many archives in parallel; never raises on a single failure.
+
+    `backend`: "thread" (default) or "process".
+
+    `on_result`/`on_error` are called from the calling thread, once all
+    results have been collected (order follows completion order via
+    `as_completed`).
+
+    `cancel`: an optional `threading.Event`. If set, stops submitting new
+    listings (already-submitted ones finish normally); cancelled listings
+    are simply absent from the returned list.
+    """
     items = list(archives)
-    workers = max_workers or os.cpu_count() or 1
+    tasks = [
+        (i, functools.partial(_list_one, arc, password, encoding))
+        for i, arc in enumerate(items)
+    ]
+    raw = _run_backend(backend, max_workers, tasks, cancel)
     results: list[ListingResult | None] = [None] * len(items)
-    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {
-            ex.submit(_list_one, arc, password, encoding): (i, arc)
-            for i, arc in enumerate(items)
-        }
-        for fut in cf.as_completed(futures):
-            i, arc = futures[fut]
-            try:
-                entries = fut.result()
-                results[i] = ListingResult(arc, entries, None)
-                if on_result is not None:
-                    on_result(arc, entries)
-            except Exception as exc:
-                mapped = _as_typed(exc)
-                results[i] = ListingResult(arc, None, mapped)
-                if on_error is not None:
-                    on_error(arc, mapped)
+    for i, entries, error in raw:
+        arc = items[i]
+        results[i] = ListingResult(arc, entries, error)
+        if error is None and on_result is not None:
+            on_result(arc, entries)  # type: ignore[arg-type]
+        elif error is not None and on_error is not None:
+            on_error(arc, error)
     return [r for r in results if r is not None]
 
 
