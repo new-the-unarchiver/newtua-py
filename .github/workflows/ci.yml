@@ -44,3 +44,13 @@ jobs:
         run: mypy
       - name: lint
         run: ruff check python tests
+
+      # The gevent transparent-swap path (batch tools use gevent's threadpool
+      # when threading is monkeypatched) needs threading patched BEFORE import,
+      # so it runs as its own process. Linux only: gevent's Windows support is
+      # limited and the swap logic is platform-independent.
+      - name: gevent batch test
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pip install gevent
+          python -c "import gevent.monkey; gevent.monkey.patch_all(); import pytest, sys; sys.exit(pytest.main(['tests/test_batch.py', '-k', 'gevent', '-v']))"

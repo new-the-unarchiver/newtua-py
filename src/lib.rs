@@ -257,6 +257,29 @@ impl Write for PySink {
     }
 }
 
+/// Wrap a Python progress callable into the engine's `ProgressFn`. Shared by
+/// `Archive::extract` and `extract_path`. The callback re-acquires the GIL via
+/// `Python::attach`, so it is safe to call from inside a `py.detach` closure.
+fn build_progress_fn(cb: Py<PyAny>) -> newtua_core::ProgressFn {
+    Box::new(move |ev: ProgressEvent| -> Flow {
+        let (event, index, path, bytes, size) = match ev {
+            ProgressEvent::EntryStart { index, path, size } => {
+                ("start", index, Some(path.to_owned()), 0u64, size)
+            }
+            ProgressEvent::Bytes { index, written } => ("bytes", index, None, written, 0),
+            ProgressEvent::EntryDone { index } => ("done", index, None, 0, 0),
+        };
+        Python::attach(|py| match cb.call1(py, (event, index, path, bytes, size)) {
+            Ok(ret) => match ret.extract::<bool>(py) {
+                // Returning False (and only False) cancels.
+                Ok(false) => Flow::Abort,
+                _ => Flow::Continue,
+            },
+            Err(_) => Flow::Abort,
+        })
+    })
+}
+
 /// An open archive. Iterate it for entries, or call `extract`/`read`.
 #[pyclass(unsendable)]
 struct Archive {
@@ -344,61 +367,17 @@ impl Archive {
     /// caller then closes it, together with the reading end.
     #[cfg(unix)]
     fn open_stream(&self, py: Python<'_>, index: usize, write_fd: i32) -> PyResult<()> {
-        use std::fs::File;
-        use std::os::fd::FromRawFd;
-        use std::sync::mpsc::sync_channel;
-
         if index >= self.entries.len() {
             return Err(to_pyerr(&Error::InvalidIndex(index)));
         }
-        let path = self.path.clone();
-        let password = self.password.clone();
-        let encoding = self.encoding.clone();
-
-        // Error is sent as split parts: `Error` itself is not `Send`.
-        let (tx, rx) = sync_channel::<Result<(), (String, &'static str)>>(1);
-
-        // GIL is released for the duration of extraction — groundwork for AsyncArchive.
-        let handshake = py.detach(move || {
-            std::thread::spawn(move || {
-                let opts = OpenOptions {
-                    password,
-                    encoding_override: encoding,
-                };
-                let mut reader = match core_open(&path, &opts) {
-                    Ok(reader) => reader,
-                    Err(e) => {
-                        // Descriptor untouched: the Python layer will close it.
-                        let _ = tx.send(Err((e.to_string(), error_kind(&e))));
-                        return;
-                    }
-                };
-                // From this point the descriptor is ours. Order matters: release
-                // the caller first, then take ownership — otherwise an early
-                // error and the success path would fight over who closes it.
-                let _ = tx.send(Ok(()));
-                // SAFETY: the caller handed us ownership of the descriptor;
-                // File closes it on drop, which signals EOF to the reader.
-                let mut sink = unsafe { File::from_raw_fd(write_fd) };
-                // Mid-extraction failure is reported by breaking the pipe: the
-                // reader sees a short stream and checks it against `Entry.size`.
-                // A write error is usually a closed reading end (the reader left
-                // early), and that also simply ends the stream.
-                let _ = reader.read_entry(index, &mut sink);
-            });
-            rx.recv()
-        });
-
-        match handshake {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err((message, kind))) => Err(pyerr_from_parts(&message, kind)),
-            // Channel died with no message: the worker panicked.
-            // The descriptor was left untouched.
-            Err(_) => Err(pyerr_from_parts(
-                "extraction worker thread terminated abnormally",
-                "io",
-            )),
-        }
+        spawn_stream_worker_unix(
+            py,
+            self.path.clone(),
+            self.password.clone(),
+            self.encoding.clone(),
+            index,
+            write_fd,
+        )
     }
 
     /// Decode one entry into a fresh pipe on a worker thread; return the read
@@ -418,57 +397,16 @@ impl Archive {
     /// check and handshake as the Unix path.
     #[cfg(windows)]
     fn open_stream_windows(&self, py: Python<'_>, index: usize) -> PyResult<isize> {
-        use std::io::pipe;
-        use std::os::windows::io::IntoRawHandle;
-        use std::sync::mpsc::sync_channel;
-
         if index >= self.entries.len() {
             return Err(to_pyerr(&Error::InvalidIndex(index)));
         }
-        let path = self.path.clone();
-        let password = self.password.clone();
-        let encoding = self.encoding.clone();
-
-        let (reader_end, writer_end) =
-            pipe().map_err(|e| pyerr_from_parts(&e.to_string(), "io"))?;
-
-        // Error is sent as split parts: `Error` itself is not `Send`.
-        let (tx, rx) = sync_channel::<Result<(), (String, &'static str)>>(1);
-
-        // GIL released for the duration of extraction, as in the Unix path.
-        let handshake = py.detach(move || {
-            // `writer_end` moves into the worker; `reader_end` stays behind.
-            std::thread::spawn(move || {
-                let opts = OpenOptions {
-                    password,
-                    encoding_override: encoding,
-                };
-                let mut reader = match core_open(&path, &opts) {
-                    Ok(reader) => reader,
-                    Err(e) => {
-                        let _ = tx.send(Err((e.to_string(), error_kind(&e))));
-                        return;
-                    }
-                };
-                let _ = tx.send(Ok(()));
-                // `PipeWriter: Write`. Dropping it closes the write end -> EOF.
-                let mut sink = writer_end;
-                let _ = reader.read_entry(index, &mut sink);
-            });
-            rx.recv()
-        });
-
-        match handshake {
-            // Ownership of the read HANDLE passes to Python (open_osfhandle
-            // adopts it); `into_raw_handle` gives it up without closing.
-            Ok(Ok(())) => Ok(reader_end.into_raw_handle() as isize),
-            // `reader_end` drops here -> read end closed; Python got nothing.
-            Ok(Err((message, kind))) => Err(pyerr_from_parts(&message, kind)),
-            Err(_) => Err(pyerr_from_parts(
-                "extraction worker thread terminated abnormally",
-                "io",
-            )),
-        }
+        spawn_stream_worker_windows(
+            py,
+            self.path.clone(),
+            self.password.clone(),
+            self.encoding.clone(),
+            index,
+        )
     }
 
     /// Extract entries to `dest`.
@@ -497,28 +435,7 @@ impl Archive {
             .as_deref()
             .and_then(|p| newtua_core::wrapper_name(p, wrapper));
 
-        let progress_fn = progress.map(|cb| {
-            let boxed: newtua_core::ProgressFn = Box::new(move |ev: ProgressEvent| -> Flow {
-                let (event, index, path, bytes, size) = match ev {
-                    ProgressEvent::EntryStart { index, path, size } => {
-                        ("start", index, Some(path.to_owned()), 0u64, size)
-                    }
-                    ProgressEvent::Bytes { index, written } => ("bytes", index, None, written, 0),
-                    ProgressEvent::EntryDone { index } => ("done", index, None, 0, 0),
-                };
-                Python::attach(|py| {
-                    match cb.call1(py, (event, index, path, bytes, size)) {
-                        // Returning False (and only False) cancels.
-                        Ok(ret) => match ret.extract::<bool>(py) {
-                            Ok(false) => Flow::Abort,
-                            _ => Flow::Continue,
-                        },
-                        Err(_) => Flow::Abort,
-                    }
-                })
-            });
-            boxed
-        });
+        let progress_fn = progress.map(build_progress_fn);
 
         let mut opts = ExtractOptions {
             dest,
@@ -539,6 +456,157 @@ impl Archive {
             aborted: report.aborted,
         })
     }
+}
+
+/// Spawn the extraction worker feeding `write_fd`, opening fresh from `path`.
+/// Shared by `Archive::open_stream` and `open_stream_path`. Blocks until the
+/// worker has opened the archive (handshake); `write_fd` transfers to Rust only
+/// on the success path. Index is NOT checked here — callers validate.
+#[cfg(unix)]
+fn spawn_stream_worker_unix(
+    py: Python<'_>,
+    path: PathBuf,
+    password: Option<String>,
+    encoding: Option<String>,
+    index: usize,
+    write_fd: i32,
+) -> PyResult<()> {
+    use std::fs::File;
+    use std::os::fd::FromRawFd;
+    use std::sync::mpsc::sync_channel;
+
+    // Error is sent as split parts: `Error` itself is not `Send`.
+    let (tx, rx) = sync_channel::<Result<(), (String, &'static str)>>(1);
+
+    // GIL is released for the duration of extraction — groundwork for AsyncArchive.
+    let handshake = py.detach(move || {
+        std::thread::spawn(move || {
+            let opts = OpenOptions {
+                password,
+                encoding_override: encoding,
+            };
+            let mut reader = match core_open(&path, &opts) {
+                Ok(reader) => reader,
+                Err(e) => {
+                    // Descriptor untouched: the Python layer will close it.
+                    let _ = tx.send(Err((e.to_string(), error_kind(&e))));
+                    return;
+                }
+            };
+            // From this point the descriptor is ours. Order matters: release
+            // the caller first, then take ownership — otherwise an early
+            // error and the success path would fight over who closes it.
+            let _ = tx.send(Ok(()));
+            // SAFETY: the caller handed us ownership of the descriptor;
+            // File closes it on drop, which signals EOF to the reader.
+            let mut sink = unsafe { File::from_raw_fd(write_fd) };
+            // Mid-extraction failure is reported by breaking the pipe: the
+            // reader sees a short stream and checks it against `Entry.size`.
+            // A write error is usually a closed reading end (the reader left
+            // early), and that also simply ends the stream.
+            let _ = reader.read_entry(index, &mut sink);
+        });
+        rx.recv()
+    });
+
+    match handshake {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err((message, kind))) => Err(pyerr_from_parts(&message, kind)),
+        // Channel died with no message: the worker panicked.
+        // The descriptor was left untouched.
+        Err(_) => Err(pyerr_from_parts(
+            "extraction worker thread terminated abnormally",
+            "io",
+        )),
+    }
+}
+
+/// Unix streaming primitive from a path. Backs `AsyncArchive.open`. Callers
+/// validate `index` against their cached listing before calling.
+#[cfg(unix)]
+#[pyfunction]
+#[pyo3(signature = (path, index, write_fd, password=None, encoding=None))]
+fn open_stream_path(
+    py: Python<'_>,
+    path: PathBuf,
+    index: usize,
+    write_fd: i32,
+    password: Option<String>,
+    encoding: Option<String>,
+) -> PyResult<()> {
+    spawn_stream_worker_unix(py, path, password, encoding, index, write_fd)
+}
+
+/// Spawn the extraction worker feeding a fresh pipe, opening fresh from `path`;
+/// return the read HANDLE for Python to adopt. Shared by
+/// `Archive::open_stream_windows` and `open_stream_windows_path`. Same
+/// handshake and ownership rules as `spawn_stream_worker_unix` — see
+/// `Archive::open_stream_windows` for the direction-inversion rationale. Index
+/// is NOT checked here — callers validate.
+#[cfg(windows)]
+fn spawn_stream_worker_windows(
+    py: Python<'_>,
+    path: PathBuf,
+    password: Option<String>,
+    encoding: Option<String>,
+    index: usize,
+) -> PyResult<isize> {
+    use std::io::pipe;
+    use std::os::windows::io::IntoRawHandle;
+    use std::sync::mpsc::sync_channel;
+
+    let (reader_end, writer_end) = pipe().map_err(|e| pyerr_from_parts(&e.to_string(), "io"))?;
+
+    // Error is sent as split parts: `Error` itself is not `Send`.
+    let (tx, rx) = sync_channel::<Result<(), (String, &'static str)>>(1);
+
+    // GIL released for the duration of extraction, as in the Unix path.
+    let handshake = py.detach(move || {
+        // `writer_end` moves into the worker; `reader_end` stays behind.
+        std::thread::spawn(move || {
+            let opts = OpenOptions {
+                password,
+                encoding_override: encoding,
+            };
+            let mut reader = match core_open(&path, &opts) {
+                Ok(reader) => reader,
+                Err(e) => {
+                    let _ = tx.send(Err((e.to_string(), error_kind(&e))));
+                    return;
+                }
+            };
+            let _ = tx.send(Ok(()));
+            // `PipeWriter: Write`. Dropping it closes the write end -> EOF.
+            let mut sink = writer_end;
+            let _ = reader.read_entry(index, &mut sink);
+        });
+        rx.recv()
+    });
+
+    match handshake {
+        // Ownership of the read HANDLE passes to Python (open_osfhandle
+        // adopts it); `into_raw_handle` gives it up without closing.
+        Ok(Ok(())) => Ok(reader_end.into_raw_handle() as isize),
+        // `reader_end` drops here -> read end closed; Python got nothing.
+        Ok(Err((message, kind))) => Err(pyerr_from_parts(&message, kind)),
+        Err(_) => Err(pyerr_from_parts(
+            "extraction worker thread terminated abnormally",
+            "io",
+        )),
+    }
+}
+
+#[cfg(windows)]
+#[pyfunction]
+#[pyo3(signature = (path, index, password=None, encoding=None))]
+fn open_stream_windows_path(
+    py: Python<'_>,
+    path: PathBuf,
+    index: usize,
+    password: Option<String>,
+    encoding: Option<String>,
+) -> PyResult<isize> {
+    spawn_stream_worker_windows(py, path, password, encoding, index)
 }
 
 /// Open an archive for listing and extraction.
@@ -570,6 +638,129 @@ fn open(path: PathBuf, password: Option<String>, encoding: Option<String>) -> Py
     })
 }
 
+/// Listing snapshot without a live reader: open, collect metadata, drop the
+/// reader. GIL released for the open+scan. Backs `AsyncArchive.__aenter__` and
+/// `list_many`. Returns (entries, format name, detected encoding).
+#[pyfunction]
+#[pyo3(signature = (path, password=None, encoding=None))]
+fn list_path(
+    py: Python<'_>,
+    path: PathBuf,
+    password: Option<String>,
+    encoding: Option<String>,
+) -> PyResult<(Vec<PyEntry>, String, String)> {
+    // Errors cross back as Send parts: `Error` is not guaranteed Send, and the
+    // detached closure's value must be. Same trick as the stream handshake.
+    let collected: Result<(Vec<EntryData>, &'static str, String), (String, &'static str)> = py
+        .detach(move || {
+            let opts = OpenOptions {
+                password,
+                encoding_override: encoding.clone(),
+            };
+            let mut reader =
+                core_open(&path, &opts).map_err(|e| (e.to_string(), error_kind(&e)))?;
+            let entries: Vec<EntryData> = reader
+                .entries()
+                .map_err(|e| (e.to_string(), error_kind(&e)))?
+                .iter()
+                .map(entry_data)
+                .collect();
+            let format = format_name(reader.format());
+            let raw_names: Vec<Vec<u8>> = entries.iter().map(|e| e.raw_name.clone()).collect();
+            let enc = newtua_core::detect_encoding(&raw_names, encoding.as_deref());
+            Ok((entries, format, enc))
+        });
+    match collected {
+        Ok((entries, format, enc)) => {
+            let py_entries = entries.iter().map(|d| PyEntry::from_data(py, d)).collect();
+            Ok((py_entries, format.to_owned(), enc))
+        }
+        Err((message, kind)) => Err(pyerr_from_parts(&message, kind)),
+    }
+}
+
+/// Read one entry to bytes, opening fresh from the path with the GIL released.
+/// Backs `AsyncArchive.read`.
+#[pyfunction]
+#[pyo3(signature = (path, index, password=None, encoding=None))]
+fn read_path<'py>(
+    py: Python<'py>,
+    path: PathBuf,
+    index: usize,
+    password: Option<String>,
+    encoding: Option<String>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let outcome: Result<Vec<u8>, (String, &'static str)> = py.detach(move || {
+        let opts = OpenOptions {
+            password,
+            encoding_override: encoding,
+        };
+        let mut reader = core_open(&path, &opts).map_err(|e| (e.to_string(), error_kind(&e)))?;
+        let mut buf: Vec<u8> = Vec::new();
+        reader
+            .read_entry(index, &mut buf)
+            .map_err(|e| (e.to_string(), error_kind(&e)))?;
+        Ok(buf)
+    });
+    match outcome {
+        Ok(buf) => Ok(PyBytes::new(py, &buf)),
+        Err((message, kind)) => Err(pyerr_from_parts(&message, kind)),
+    }
+}
+
+/// Extract to `dest`, opening fresh from the path with the GIL released. Backs
+/// `AsyncArchive.extract` and `extract_many` (thread backend). Signature mirrors
+/// `Archive::extract`, plus `password`/`encoding` for the re-open.
+#[pyfunction]
+#[pyo3(signature = (path, dest, selection=None, wrapper=true, strict=false, preserve=true, progress=None, name_source=None, password=None, encoding=None))]
+#[allow(clippy::too_many_arguments)]
+fn extract_path(
+    py: Python<'_>,
+    path: PathBuf,
+    dest: PathBuf,
+    selection: Option<Vec<usize>>,
+    wrapper: bool,
+    strict: bool,
+    preserve: bool,
+    progress: Option<Py<PyAny>>,
+    name_source: Option<PathBuf>,
+    password: Option<String>,
+    encoding: Option<String>,
+) -> PyResult<PyReport> {
+    let wrapper_name = name_source
+        .as_deref()
+        .and_then(|p| newtua_core::wrapper_name(p, wrapper));
+    let progress_fn = progress.map(build_progress_fn);
+    let outcome: Result<(usize, usize, bool), (String, &'static str)> = py.detach(move || {
+        let opts_open = OpenOptions {
+            password,
+            encoding_override: encoding,
+        };
+        let mut reader =
+            core_open(&path, &opts_open).map_err(|e| (e.to_string(), error_kind(&e)))?;
+        let mut ex = ExtractOptions {
+            dest,
+            wrapper_name,
+            strict,
+            preserve,
+            selection,
+            progress: progress_fn,
+            keep_macos_metadata: false,
+        };
+        let report = newtua_core::extract_all(&mut *reader, &mut ex)
+            .map_err(|e| (e.to_string(), error_kind(&e)))?;
+        Ok((report.extracted, report.failed.len(), report.aborted))
+    });
+    match outcome {
+        Ok((extracted, failed, aborted)) => Ok(PyReport {
+            extracted,
+            failed,
+            aborted,
+        }),
+        Err((message, kind)) => Err(pyerr_from_parts(&message, kind)),
+    }
+}
+
 /// Every format name the engine can report. Used by the Python-side guard.
 #[pyfunction]
 #[pyo3(name = "_all_formats")]
@@ -583,6 +774,13 @@ fn _newtua(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEntry>()?;
     m.add_class::<PyReport>()?;
     m.add_function(wrap_pyfunction!(open, m)?)?;
+    m.add_function(wrap_pyfunction!(list_path, m)?)?;
+    m.add_function(wrap_pyfunction!(read_path, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_path, m)?)?;
+    #[cfg(unix)]
+    m.add_function(wrap_pyfunction!(open_stream_path, m)?)?;
+    #[cfg(windows)]
+    m.add_function(wrap_pyfunction!(open_stream_windows_path, m)?)?;
     m.add_function(wrap_pyfunction!(all_formats, m)?)?;
     m.add("NewtuaError", m.py().get_type::<NewtuaError>())?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

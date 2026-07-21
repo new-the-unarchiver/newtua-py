@@ -12,6 +12,8 @@ with newtua.Archive("photos.zip") as ar:
 
 from ._newtua import __version__
 from ._archive import Archive, Report
+from ._async import AsyncArchive, AsyncEntryStream
+from ._batch import BatchResult, ExtractJob, ListingResult, extract_many, list_many
 from ._entry import Entry, EntryKind
 from ._errors import (
     CorruptArchiveError,
@@ -36,6 +38,9 @@ from ._stream import EntryStream
 
 __all__ = [
     "Archive",
+    "AsyncArchive",
+    "AsyncEntryStream",
+    "BatchResult",
     "BytesWritten",
     "CorruptArchiveError",
     "Entry",
@@ -45,7 +50,9 @@ __all__ = [
     "EntryStarted",
     "EntryStream",
     "EventKind",
+    "ExtractJob",
     "Format",
+    "ListingResult",
     "MissingVolumeError",
     "NewtuaError",
     "PasswordRequiredError",
@@ -56,4 +63,6 @@ __all__ = [
     "UnsupportedError",
     "WrongPasswordError",
     "__version__",
+    "extract_many",
+    "list_many",
 ]

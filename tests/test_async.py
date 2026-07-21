@@ -1,0 +1,109 @@
+import asyncio
+import pathlib
+
+import pytest
+
+import newtua
+
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def test_async_listing_matches_sync():
+    async def main():
+        async with newtua.AsyncArchive(str(FIXTURES / "hello.7z")) as ar:
+            return ar.format, ar.detected_encoding, [str(e.path) for e in ar], len(ar)
+
+    fmt, enc, paths, n = run(main())
+    with newtua.Archive(str(FIXTURES / "hello.7z")) as sync:
+        assert fmt == sync.format
+        assert enc == sync.detected_encoding
+        assert paths == [str(e.path) for e in sync]
+        assert n == len(sync)
+
+
+def test_async_read_matches_sync():
+    async def main():
+        async with newtua.AsyncArchive(str(FIXTURES / "hello.7z")) as ar:
+            return await ar.read(0)
+
+    with newtua.Archive(str(FIXTURES / "hello.7z")) as sync:
+        assert run(main()) == sync.read(0)
+
+
+def test_async_extract_matches_sync(tmp_path):
+    async def main():
+        async with newtua.AsyncArchive(str(FIXTURES / "hello.7z")) as ar:
+            return await ar.extract(str(tmp_path / "a"))
+
+    report = run(main())
+    with newtua.Archive(str(FIXTURES / "hello.7z")) as sync:
+        expected = sync.extract(str(tmp_path / "b"))
+    assert (report.extracted, report.failed, report.aborted) == (
+        expected.extracted, expected.failed, expected.aborted
+    )
+
+
+def test_async_entries_are_metadata_only():
+    # Записи из AsyncArchive не должны тащить блокирующий sync-вызов.
+    async def main():
+        async with newtua.AsyncArchive(str(FIXTURES / "hello.7z")) as ar:
+            return ar[0]
+
+    entry = run(main())
+    with pytest.raises(ValueError, match="not attached"):
+        entry.read()
+
+
+def test_async_missing_file_raises_file_not_found():
+    async def main():
+        async with newtua.AsyncArchive("/no/such/file.zip"):
+            pass  # pragma: no cover - __aenter__ must raise first
+
+    with pytest.raises(FileNotFoundError):
+        run(main())
+
+
+def test_async_garbage_file_raises_typed_error(tmp_path):
+    garbage = tmp_path / "garbage.bin"
+    garbage.write_bytes(b"not an archive")
+
+    async def main():
+        async with newtua.AsyncArchive(str(garbage)):
+            pass  # pragma: no cover - __aenter__ must raise first
+
+    with pytest.raises(newtua.UnknownFormatError) as excinfo:
+        run(main())
+    assert isinstance(excinfo.value, newtua.UnknownFormatError)
+
+
+def test_async_stream_matches_sync_read():
+    async def main():
+        async with newtua.AsyncArchive(str(FIXTURES / "hello.7z")) as ar:
+            async with ar.open(0) as stream:
+                return await stream.read()
+
+    with newtua.Archive(str(FIXTURES / "hello.7z")) as sync:
+        assert run(main()) == sync.read(0)
+
+
+def test_async_read_before_aenter_raises():
+    ar = newtua.AsyncArchive(str(FIXTURES / "hello.7z"))
+    with pytest.raises(ValueError, match="unopened or closed"):
+        run(ar.read(0))
+
+
+def test_async_stream_iterates_in_chunks():
+    async def main():
+        chunks = []
+        async with newtua.AsyncArchive(str(FIXTURES / "hello.7z")) as ar:
+            async with ar.open(0) as stream:
+                async for chunk in stream:
+                    chunks.append(chunk)
+        return b"".join(chunks)
+
+    with newtua.Archive(str(FIXTURES / "hello.7z")) as sync:
+        assert run(main()) == sync.read(0)
