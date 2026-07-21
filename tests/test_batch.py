@@ -1,7 +1,7 @@
 import pathlib
 
 import newtua
-from newtua._batch import ExtractJob, extract_many
+from newtua._batch import ExtractJob, extract_many, list_many  # B6 переведёт на `from newtua import list_many`
 from tests.conftest import make_two_entry_zip
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -49,3 +49,13 @@ def test_extract_many_callbacks_fire(tmp_path):
         on_error=lambda job, exc: seen.append(("err", exc)),
     )
     assert seen == [("ok", 2)]
+
+
+def test_list_many_matches_sync(tmp_path):
+    archives = [make_two_entry_zip(tmp_path / f"in{i}.zip") for i in range(3)]
+    results = list_many(archives)
+    assert len(results) == 3
+    for r in results:
+        assert r.error is None
+        with newtua.Archive(str(r.archive)) as sync:
+            assert [str(e.path) for e in r.entries] == [str(e.path) for e in sync]

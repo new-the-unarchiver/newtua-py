@@ -22,7 +22,7 @@ from newtua._entry import Entry
 from newtua._errors import raise_for
 from newtua._events import ProgressEvent
 
-__all__ = ["ExtractJob", "BatchResult", "extract_many"]
+__all__ = ["ExtractJob", "BatchResult", "extract_many", "ListingResult", "list_many"]
 
 _ArchiveRef = str | os.PathLike[str]
 _Selection = Sequence[int | str | PurePosixPath | Entry]
@@ -121,6 +121,56 @@ def extract_many(
                 results[i] = BatchResult(job, None, mapped)
                 if on_error is not None:
                     on_error(job, mapped)
+    return [r for r in results if r is not None]
+
+
+@dataclass(frozen=True)
+class ListingResult:
+    """Outcome of one listing: exactly one of `entries`/`error` is set."""
+
+    archive: _ArchiveRef
+    entries: tuple[Entry, ...] | None
+    error: BaseException | None
+
+
+def _list_one(archive: _ArchiveRef, password: str | None, encoding: str | None) -> tuple[Entry, ...]:
+    """List one archive's entries (metadata only). Module-level for pickling."""
+    raw, _, _ = _newtua.list_path(str(archive), password, encoding)
+    entries, _ = _entries_from_raw(raw, None)
+    return entries
+
+
+def list_many(
+    archives: Iterable[_ArchiveRef],
+    *,
+    password: str | None = None,
+    encoding: str | None = None,
+    backend: str = "thread",
+    max_workers: int | None = None,
+    on_result: Callable[[_ArchiveRef, tuple[Entry, ...]], None] | None = None,
+    on_error: Callable[[_ArchiveRef, BaseException], None] | None = None,
+) -> list[ListingResult]:
+    """List many archives in parallel; never raises on a single failure."""
+    items = list(archives)
+    workers = max_workers or os.cpu_count() or 1
+    results: list[ListingResult | None] = [None] * len(items)
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {
+            ex.submit(_list_one, arc, password, encoding): (i, arc)
+            for i, arc in enumerate(items)
+        }
+        for fut in cf.as_completed(futures):
+            i, arc = futures[fut]
+            try:
+                entries = fut.result()
+                results[i] = ListingResult(arc, entries, None)
+                if on_result is not None:
+                    on_result(arc, entries)
+            except Exception as exc:
+                mapped = _as_typed(exc)
+                results[i] = ListingResult(arc, None, mapped)
+                if on_error is not None:
+                    on_error(arc, mapped)
     return [r for r in results if r is not None]
 
 
