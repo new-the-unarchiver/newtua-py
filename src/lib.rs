@@ -22,8 +22,8 @@ create_exception!(
     "Error from the newtua engine."
 );
 
-/// Разновидность ошибки для питоновского слоя: он поднимает по ней свой класс
-/// из иерархии. Разбирать текст сообщения нельзя, поэтому признак — отдельно.
+/// Error kind for the Python layer: it maps this to its own exception class
+/// in the hierarchy. The message text must not be parsed, so the kind is separate.
 fn error_kind(e: &Error) -> &'static str {
     match e {
         Error::UnknownFormat => "unknown_format",
@@ -38,15 +38,15 @@ fn error_kind(e: &Error) -> &'static str {
     }
 }
 
-/// Собрать питоновскую ошибку из уже разобранных частей. Отдельно от
-/// `to_pyerr`, потому что рабочий поток стрима не может отдать сам `Error`
-/// (тот не `Send`) — он присылает текст и признак.
+/// Build a Python error from already-split parts. Separate from `to_pyerr`
+/// because the stream worker thread cannot hand over `Error` itself (it is
+/// not `Send`) — it sends the message text and the kind instead.
 fn pyerr_from_parts(message: &str, kind: &'static str) -> PyErr {
     let err = NewtuaError::new_err(message.to_owned());
     Python::attach(|py| {
-        // `kind` читает питоновский слой, чтобы поднять свой класс исключения;
-        // текст сообщения остаётся человеку. Неудача setattr не должна
-        // подменять исходную ошибку — она важнее.
+        // The Python layer reads `kind` to raise its own exception class;
+        // the message text is for humans. A failed setattr must not replace
+        // the original error — that one matters more.
         let _ = err.value(py).setattr("kind", kind);
     });
     err
@@ -56,22 +56,22 @@ fn to_pyerr(e: &Error) -> PyErr {
     pyerr_from_parts(&e.to_string(), error_kind(e))
 }
 
-/// Все форматы движка одной таблицей: пара «вариант ядра → имя для Python».
+/// All engine formats in one table: each pair is "core variant → Python name".
 ///
-/// Отсюда растут оба потребителя — `format_name` и `ALL_FORMATS`, — поэтому
-/// разойтись им негде. `match` внутри макроса намеренно без `_ =>`: добавят
-/// вариант в `FormatId` — код перестанет собираться ровно здесь, и это
-/// единственное место, которое надо будет поправить.
+/// Both consumers — `format_name` and `ALL_FORMATS` — grow from here, so they
+/// cannot drift apart. The `match` inside the macro deliberately has no `_ =>`:
+/// adding a variant to `FormatId` will fail to compile right here, and this is
+/// the only place that then needs fixing.
 macro_rules! formats {
     ($($variant:ident => $name:literal,)+) => {
-        /// Человекочитаемое имя формата.
+        /// Human-readable format name.
         fn format_name(f: FormatId) -> &'static str {
             match f {
                 $(FormatId::$variant => $name,)+
             }
         }
 
-        /// Все имена форматов — для сторожа, который сверяет питоновский `Format`.
+        /// All format names — for the guard that checks the Python `Format`.
         const ALL_FORMATS: &[&str] = &[$($name,)+];
     };
 }
@@ -172,9 +172,9 @@ fn entry_data(e: &CoreEntry) -> EntryData {
 struct PyEntry {
     /// Decoded path within the archive.
     path: String,
-    /// Имя записи ровно теми байтами, что записаны в архиве. Именно `bytes`,
-    /// а не `str`: любое декодирование здесь — потеря, а на это поле смотрят
-    /// проверки безопасности пути.
+    /// Entry name as the exact bytes stored in the archive. Kept as `bytes`,
+    /// not `str`: any decoding here would lose information, and path-safety
+    /// checks look at this field.
     raw_name: Py<PyBytes>,
     /// `"file"`, `"dir"`, or `"symlink"`.
     kind: String,
@@ -212,14 +212,14 @@ struct PyReport {
 
 use std::io::Write;
 
-/// Адаптер: `std::io::Write` поверх питоновского объекта с методом `write`.
-/// Движок пишет кусками, каждый кусок уезжает в Python как `bytes`.
+/// Adapter: `std::io::Write` over a Python object with a `write` method.
+/// The engine writes in chunks; each chunk goes to Python as `bytes`.
 struct PySink {
     obj: Py<PyAny>,
-    /// Исключение, которое поднял сам питоновский приёмник. `std::io::Error`
-    /// довёз бы до вызывающей стороны только текст, а класс исключения —
-    /// единственное, по чему её коду позволено разбирать ошибку. Поэтому
-    /// исходный `PyErr` откладывается сюда и восстанавливается на возврате.
+    /// Exception raised by the Python sink itself. `std::io::Error` would only
+    /// carry the text to the caller, but the exception class is the only thing
+    /// its code is allowed to discriminate on. So the original `PyErr` is
+    /// stashed here and restored on the way back.
     err: Option<PyErr>,
 }
 
@@ -263,11 +263,11 @@ struct Archive {
     reader: Box<dyn ArchiveReader>,
     entries: Vec<EntryData>,
     path: PathBuf,
-    // Считается один раз при открытии, по настоящим байтам всех имён. Питон
-    // сам это посчитать не может: к нему имена приезжают уже поштучно.
+    // Computed once at open, from the real bytes of every name. Python cannot
+    // compute this itself: names arrive there one at a time.
     detected_encoding: String,
-    // Как архив был открыт. Читатель непереносим между потоками, поэтому
-    // рабочий поток открывает архив заново — по этим самым значениям.
+    // How the archive was opened. The reader is not Send across threads, so
+    // the worker re-opens the archive using these same values.
     password: Option<String>,
     encoding: Option<String>,
 }
@@ -332,17 +332,16 @@ impl Archive {
     /// `os.pipe()` on Windows yields a CRT descriptor that `File::from_raw_fd`
     /// does not accept.
     ///
-    /// **Рукопожатие.** Метод не возвращает управление, пока рабочий поток не
-    /// открыл архив. Это закрывает гонку: источником может быть временный
-    /// файл, который вызывающая сторона удалит сразу после возврата, — а к
-    /// этому моменту он уже открыт (на Unix удаление открытого файла безвредно).
-    /// Побочная выгода: ошибка открытия (неверный пароль, битый заголовок)
-    /// поднимается исключением прямо здесь, а не оборачивается молча
-    /// оборванным каналом.
+    /// **Handshake.** The method does not return until the worker thread has
+    /// opened the archive. That closes a race: the source may be a temporary
+    /// file the caller deletes right after return — and by then it is already
+    /// open (on Unix, unlinking an open file is harmless). Side benefit: an
+    /// open error (wrong password, corrupt header) is raised as an exception
+    /// right here, instead of being wrapped as a silently broken channel.
     ///
-    /// **Владение `write_fd`.** Дескриптор переходит к Rust только на удачном
-    /// пути. Любая ошибка этого метода оставляет его нетронутым — закрывает
-    /// его тогда вызывающая сторона, вместе с читающим концом.
+    /// **Ownership of `write_fd`.** The descriptor transfers to Rust only on
+    /// the success path. Any error from this method leaves it untouched — the
+    /// caller then closes it, together with the reading end.
     #[cfg(unix)]
     fn open_stream(&self, py: Python<'_>, index: usize, write_fd: i32) -> PyResult<()> {
         use std::fs::File;
@@ -356,10 +355,10 @@ impl Archive {
         let password = self.password.clone();
         let encoding = self.encoding.clone();
 
-        // Ошибку отдаём разобранной на части: сам `Error` не `Send`.
+        // Error is sent as split parts: `Error` itself is not `Send`.
         let (tx, rx) = sync_channel::<Result<(), (String, &'static str)>>(1);
 
-        // GIL отпускается на время распаковки — это и есть задел под AsyncArchive.
+        // GIL is released for the duration of extraction — groundwork for AsyncArchive.
         let handshake = py.detach(move || {
             std::thread::spawn(move || {
                 let opts = OpenOptions {
@@ -369,22 +368,22 @@ impl Archive {
                 let mut reader = match core_open(&path, &opts) {
                     Ok(reader) => reader,
                     Err(e) => {
-                        // Дескриптор не тронут: закроет его питоновский слой.
+                        // Descriptor untouched: the Python layer will close it.
                         let _ = tx.send(Err((e.to_string(), error_kind(&e))));
                         return;
                     }
                 };
-                // С этого мига дескриптор наш. Порядок важен: сначала отпускаем
-                // вызывающую сторону, и только потом берём владение, — иначе
-                // ранняя ошибка и удачный путь спорили бы за то, кто закрывает.
+                // From this point the descriptor is ours. Order matters: release
+                // the caller first, then take ownership — otherwise an early
+                // error and the success path would fight over who closes it.
                 let _ = tx.send(Ok(()));
-                // SAFETY: дескриптор отдан нам во владение вызывающей стороной;
-                // File закроет его при выходе, что и сигналит читателю конец.
+                // SAFETY: the caller handed us ownership of the descriptor;
+                // File closes it on drop, which signals EOF to the reader.
                 let mut sink = unsafe { File::from_raw_fd(write_fd) };
-                // Об ошибке в середине распаковки сообщаем обрывом канала:
-                // читатель увидит короткий поток и сверит его с `Entry.size`.
-                // Ошибка записи — это обычно закрытый читающий конец (читатель
-                // ушёл раньше времени), и она тоже просто завершает поток.
+                // Mid-extraction failure is reported by breaking the pipe: the
+                // reader sees a short stream and checks it against `Entry.size`.
+                // A write error is usually a closed reading end (the reader left
+                // early), and that also simply ends the stream.
                 let _ = reader.read_entry(index, &mut sink);
             });
             rx.recv()
@@ -393,10 +392,80 @@ impl Archive {
         match handshake {
             Ok(Ok(())) => Ok(()),
             Ok(Err((message, kind))) => Err(pyerr_from_parts(&message, kind)),
-            // Канал оборвался, не сказав ни слова: рабочий поток запаниковал.
-            // Дескриптор при этом остался нетронутым.
+            // Channel died with no message: the worker panicked.
+            // The descriptor was left untouched.
             Err(_) => Err(pyerr_from_parts(
-                "рабочий поток распаковки завершился аварийно",
+                "extraction worker thread terminated abnormally",
+                "io",
+            )),
+        }
+    }
+
+    /// Decode one entry into a fresh pipe on a worker thread; return the read
+    /// HANDLE for Python to adopt. Windows counterpart of `open_stream`.
+    ///
+    /// The direction is inverted from the Unix path on purpose. `os.pipe()` on
+    /// Windows yields a C-runtime descriptor whose ownership `get_osfhandle`
+    /// does not transfer, so handing the *write* end across the boundary would
+    /// mean a fragile handle-duplication dance. Instead Rust creates the pipe
+    /// here: the write end never leaves Rust (the worker writes into it and
+    /// drops it, which is EOF), and the read HANDLE is handed to Python, which
+    /// adopts it with `msvcrt.open_osfhandle` — a clean single-owner transfer.
+    ///
+    /// Rust owns both ends until the handshake succeeds: on an open error the
+    /// read end is dropped here and Python gets nothing to clean up; on success
+    /// ownership of the read HANDLE passes to Python. Same synchronous index
+    /// check and handshake as the Unix path.
+    #[cfg(windows)]
+    fn open_stream_windows(&self, py: Python<'_>, index: usize) -> PyResult<isize> {
+        use std::io::pipe;
+        use std::os::windows::io::IntoRawHandle;
+        use std::sync::mpsc::sync_channel;
+
+        if index >= self.entries.len() {
+            return Err(to_pyerr(&Error::InvalidIndex(index)));
+        }
+        let path = self.path.clone();
+        let password = self.password.clone();
+        let encoding = self.encoding.clone();
+
+        let (reader_end, writer_end) =
+            pipe().map_err(|e| pyerr_from_parts(&e.to_string(), "io"))?;
+
+        // Error is sent as split parts: `Error` itself is not `Send`.
+        let (tx, rx) = sync_channel::<Result<(), (String, &'static str)>>(1);
+
+        // GIL released for the duration of extraction, as in the Unix path.
+        let handshake = py.detach(move || {
+            // `writer_end` moves into the worker; `reader_end` stays behind.
+            std::thread::spawn(move || {
+                let opts = OpenOptions {
+                    password,
+                    encoding_override: encoding,
+                };
+                let mut reader = match core_open(&path, &opts) {
+                    Ok(reader) => reader,
+                    Err(e) => {
+                        let _ = tx.send(Err((e.to_string(), error_kind(&e))));
+                        return;
+                    }
+                };
+                let _ = tx.send(Ok(()));
+                // `PipeWriter: Write`. Dropping it closes the write end -> EOF.
+                let mut sink = writer_end;
+                let _ = reader.read_entry(index, &mut sink);
+            });
+            rx.recv()
+        });
+
+        match handshake {
+            // Ownership of the read HANDLE passes to Python (open_osfhandle
+            // adopts it); `into_raw_handle` gives it up without closing.
+            Ok(Ok(())) => Ok(reader_end.into_raw_handle() as isize),
+            // `reader_end` drops here -> read end closed; Python got nothing.
+            Ok(Err((message, kind))) => Err(pyerr_from_parts(&message, kind)),
+            Err(_) => Err(pyerr_from_parts(
+                "extraction worker thread terminated abnormally",
                 "io",
             )),
         }
@@ -408,10 +477,10 @@ impl Archive {
     /// callable `(event, index, path, bytes, size)`; return False to cancel.
     ///
     /// `name_source`: path whose name the wrapper folder takes; `None` means
-    /// there is no such name and no wrapper folder. Никакой замены по
-    /// умолчанию здесь нет намеренно: собственный путь архива — это временный
-    /// файл всякий раз, когда источником были байты или поток, а знает об
-    /// этом только питоновский слой. Значит и решение целиком его.
+    /// there is no such name and no wrapper folder. No default substitution is
+    /// intentional: the archive's own path is a temporary file whenever the
+    /// source was bytes or a stream, and only the Python layer knows that.
+    /// So the decision is entirely its.
     #[pyo3(signature = (dest, selection=None, wrapper=true, strict=false, preserve=true, progress=None, name_source=None))]
     #[allow(clippy::too_many_arguments)]
     fn extract(
@@ -487,8 +556,8 @@ fn open(path: PathBuf, password: Option<String>, encoding: Option<String>) -> Py
         .iter()
         .map(entry_data)
         .collect();
-    // Кодировку определяем здесь, на настоящих байтах и сразу по всем именам:
-    // один общий вердикт на архив, ровно как это делает само ядро.
+    // Detect encoding here, from the real bytes of every name at once:
+    // one shared verdict for the archive, exactly as the core does.
     let raw_names: Vec<Vec<u8>> = entries.iter().map(|e| e.raw_name.clone()).collect();
     let detected_encoding = newtua_core::detect_encoding(&raw_names, encoding.as_deref());
     Ok(Archive {

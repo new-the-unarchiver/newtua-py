@@ -8,11 +8,13 @@ jobs:
   check:
     strategy:
       matrix:
-        # Linux and macOS only. `stream=True` decodes through an OS pipe and
-        # says so on other platforms (NotImplementedError), and the test module
-        # imports `resource`, which POSIX has and Windows does not. Windows
-        # wheels are a separate piece of work, not a matrix entry.
-        os: [ubuntu-latest, macos-latest]
+        # All three OSes. `stream=True` now works on Windows too, for a
+        # file-path source: Rust creates the pipe (`std::io::pipe`) and the read
+        # end is adopted with `msvcrt`. A bytes/stream source raises
+        # NotImplementedError there. POSIX-only tests (those using `resource` or
+        # `/dev/fd`) skip on Windows; the Windows job is where the
+        # `#[cfg(windows)]` code first compiles and runs for real.
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

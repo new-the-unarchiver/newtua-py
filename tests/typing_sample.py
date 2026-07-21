@@ -3,8 +3,6 @@
 Появится дыра в типах — падает этот файл, а не пользователь.
 """
 
-from __future__ import annotations
-
 import datetime
 import pathlib
 import tempfile

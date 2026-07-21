@@ -307,7 +307,7 @@ def test_needs_password_is_true_when_the_listing_itself_is_encrypted(tmp_path):
     from newtua._archive import Archive as ArchiveClass
 
     class HeaderEncrypted(ArchiveClass):
-        def _load(self):
+        def _listing(self):
             raise newtua.PasswordRequiredError("заголовок зашифрован")
 
     assert HeaderEncrypted(HELLO_7Z).needs_password is True

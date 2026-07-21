@@ -2,16 +2,23 @@ import io
 import json
 import os
 import pathlib
-import resource
 import shutil
 import sys
 import time
 import zipfile
 
+import pytest
+
 import newtua
 from newtua._stream import EntryStream, _PipeStream
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+
+# The stream=True pipe path is platform-specific. The POSIX tests below assume
+# an fd-based pipe (and some use `resource` / `/dev/fd`); the Windows tests
+# assume the inverted, Rust-created pipe. Each side skips on the other.
+posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX pipe streaming path")
+windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows pipe streaming path")
 
 
 def writer_of(payload: bytes):
@@ -108,12 +115,14 @@ def fd_count() -> int:
     return len(os.listdir("/dev/fd"))
 
 
+@posix_only
 def test_stream_mode_reads_the_same_bytes():
     with newtua.Archive(FIXTURES / "hello.7z") as ar:
         with ar.open(0, stream=True) as f:
             assert f.read() == b"hello 7z"
 
 
+@posix_only
 def test_stream_is_not_seekable():
     with newtua.Archive(FIXTURES / "hello.7z") as ar:
         with ar.open(0, stream=True) as f:
@@ -127,6 +136,7 @@ def test_stream_is_not_seekable():
                 raise AssertionError("перемотка стрима должна давать UnsupportedOperation")
 
 
+@posix_only
 def test_stream_matches_buffered_mode_byte_for_byte(tmp_path):
     archive = zip_of_repeated_chunks(tmp_path / "payload.zip", 24)
     with newtua.Archive(archive) as ar:
@@ -137,6 +147,7 @@ def test_stream_matches_buffered_mode_byte_for_byte(tmp_path):
     assert got == expected == CHUNK * 24
 
 
+@posix_only
 def test_stream_reads_in_pieces(tmp_path):
     archive = zip_of_repeated_chunks(tmp_path / "payload.zip", 8)
     with newtua.Archive(archive) as ar, ar.open(0, stream=True) as f:
@@ -149,6 +160,7 @@ def test_stream_reads_in_pieces(tmp_path):
     assert b"".join(pieces) == CHUNK * 8
 
 
+@posix_only
 def test_closing_mid_read_leaks_no_descriptors(tmp_path):
     """Уход читателя на середине: процесс жив, рабочий поток доигрывает и уходит.
 
@@ -177,6 +189,7 @@ def test_closing_mid_read_leaks_no_descriptors(tmp_path):
         assert fd_count() == fds_before
 
 
+@posix_only
 def test_stream_memory_stays_flat(tmp_path):
     archive = zip_of_repeated_chunks(tmp_path / "big.zip", 1024)  # 64 MiB
     before = maxrss_bytes()
@@ -193,10 +206,17 @@ def test_stream_memory_stays_flat(tmp_path):
 
 
 def maxrss_bytes() -> int:
+    # POSIX-only: `resource` does not exist on Windows. Used only by POSIX-gated
+    # tests; the guard also narrows the platform so mypy accepts the import.
+    if sys.platform == "win32":  # pragma: no cover - POSIX-only helper
+        raise AssertionError("maxrss_bytes is POSIX-only")
+    import resource
+
     raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return raw if sys.platform == "darwin" else raw * 1024
 
 
+@posix_only
 def test_bad_index_raises_instead_of_streaming_nothing():
     with newtua.Archive(FIXTURES / "hello.7z") as ar:
         try:
@@ -207,6 +227,7 @@ def test_bad_index_raises_instead_of_streaming_nothing():
             raise AssertionError("неверный номер записи должен давать IndexError")
 
 
+@posix_only
 def test_engine_rejects_a_bad_index_before_taking_the_pipe():
     """Сторож в Rust: номер проверяется до того, как поток начнёт писать."""
     with newtua.Archive(FIXTURES / "hello.7z") as ar:
@@ -226,6 +247,7 @@ def test_engine_rejects_a_bad_index_before_taking_the_pipe():
 # ── stream=True: сверка длины против Entry.size ─────────────────────────
 
 
+@posix_only
 def test_stream_mode_full_read_matches_buffered_mode_when_intact():
     """Целая запись в режиме stream=True не бросает исключений и совпадает
     с обычным режимом побайтово — сверка длины не мешает штатному чтению."""
@@ -237,6 +259,7 @@ def test_stream_mode_full_read_matches_buffered_mode_when_intact():
     assert got == expected == b"hello 7z"
 
 
+@posix_only
 def test_pipe_stream_raises_when_data_ends_short_of_expected_size():
     """Логика сверки напрямую: бэкинг отдаёт меньше, чем обещал `expected_size`.
 
@@ -257,6 +280,7 @@ def test_pipe_stream_raises_when_data_ends_short_of_expected_size():
         raise AssertionError("обрыв данных должен давать CorruptArchiveError")
 
 
+@posix_only
 def test_pipe_stream_allows_closing_before_expected_size_is_reached():
     """Уход читателя на середине — не ошибка: сверка молчит, если до конца
     данных читатель не дошёл (см. test_closing_mid_read_leaks_no_descriptors
@@ -272,6 +296,7 @@ def test_pipe_stream_allows_closing_before_expected_size_is_reached():
 # ── stream=True: рукопожатие с рабочим потоком ──────────────────────────
 
 
+@posix_only
 def test_stream_survives_the_archive_closing_right_after_it_was_opened():
     """Гонка со сносом временного файла.
 
@@ -305,6 +330,7 @@ def test_stream_survives_the_archive_closing_right_after_it_was_opened():
     assert failures == []
 
 
+@posix_only
 def test_tempfile_outlives_the_archive_while_a_stream_is_still_open():
     """Свойство, которым закрыта гонка, — проверяемое без гонки.
 
@@ -325,6 +351,7 @@ def test_tempfile_outlives_the_archive_while_a_stream_is_still_open():
     assert not tempfile.path.exists(), "последний держатель ушёл, а файл остался"
 
 
+@posix_only
 def test_stream_that_fails_to_open_does_not_pin_the_tempfile(tmp_path):
     """Провал открытия снимает заявку — иначе файл жил бы до сборки мусора."""
     archive = tmp_path / "broken.zip"
@@ -345,6 +372,7 @@ def test_stream_that_fails_to_open_does_not_pin_the_tempfile(tmp_path):
     assert not tempfile.path.exists(), "заявка провалившегося стрима не снята"
 
 
+@posix_only
 def test_open_failure_raises_at_the_call_instead_of_emptying_the_pipe(tmp_path):
     """Ошибка открытия приходит исключением в момент вызова.
 
@@ -367,6 +395,7 @@ def test_open_failure_raises_at_the_call_instead_of_emptying_the_pipe(tmp_path):
             raise AssertionError("ошибка открытия должна подниматься исключением")
 
 
+@posix_only
 def test_failed_open_leaves_no_descriptors_behind(tmp_path):
     """Провал открытия не должен терять ни одного конца канала."""
     archive = tmp_path / "secret.zip"
@@ -387,6 +416,7 @@ def test_failed_open_leaves_no_descriptors_behind(tmp_path):
 # ── stream=True: read(n) отдаёт ровно n ─────────────────────────────────
 
 
+@posix_only
 def test_read_returns_exactly_what_was_asked_for(tmp_path):
     """`io.BufferedIOBase` обещает ровно `n` байт, пока данные не кончились.
 
@@ -402,6 +432,7 @@ def test_read_returns_exactly_what_was_asked_for(tmp_path):
         assert len(f.read(3 * 1024 * 1024)) == 3 * 1024 * 1024
 
 
+@posix_only
 def test_read_returns_short_only_at_the_very_end(tmp_path):
     """Недобор допустим ровно один раз — на исчерпании данных."""
     archive = zip_of_repeated_chunks(tmp_path / "big.zip", 8)  # 512 КиБ
@@ -412,3 +443,34 @@ def test_read_returns_short_only_at_the_very_end(tmp_path):
         rest = f.read(1024 * 1024)  # просим много, осталось 100
         assert len(rest) == 100
         assert f.read(16) == b""
+
+
+# ── stream=True под Windows: путь работает, байты — нет ──────────────────
+
+
+@windows_only
+def test_stream_from_a_path_source_reads_the_same_bytes():
+    """Windows: поток из источника-пути отдаёт те же байты, что и обычное чтение.
+
+    Исполняется только на Windows-CI — единственном месте, где есть Windows-канал.
+    """
+    with newtua.Archive(FIXTURES / "hello.7z") as ar:
+        with ar.open(0, stream=True) as f:
+            got = f.read()
+        expected = ar.read(0)
+    assert got == expected == b"hello 7z"
+
+
+@windows_only
+def test_stream_from_bytes_source_is_rejected_on_windows():
+    """Windows: bytes-источник + stream=True сознательно не поддержан."""
+    data = (FIXTURES / "hello.7z").read_bytes()
+    with newtua.Archive(data) as ar:
+        try:
+            ar.open(0, stream=True)
+        except NotImplementedError:
+            pass
+        else:  # pragma: no cover
+            raise AssertionError(
+                "bytes-источник под Windows должен давать NotImplementedError"
+            )

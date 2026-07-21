@@ -1,7 +1,5 @@
 """File-like access to a single archive entry."""
 
-from __future__ import annotations
-
 import io
 from tempfile import SpooledTemporaryFile
 from typing import IO, TYPE_CHECKING, Callable, Protocol
@@ -18,13 +16,16 @@ MAX_IN_MEMORY = 8 * 1024 * 1024
 
 
 class _Backing(Protocol):
-    """The reading surface a backing store must offer.
-
-    Narrower than `IO[bytes]` on purpose: `readinto` is the part that matters
-    here (it is what lets a caller's buffer be filled without an intermediate
-    copy), and `IO[bytes]` does not promise it. Both backings in use — a
-    `SpooledTemporaryFile` and a pipe opened by `os.fdopen` — do.
     """
+    The reading surface a backing store must offer.
+    """
+
+    # Narrower than `IO[bytes]` on purpose: `readinto` is the part that
+    # matters here (it is what lets a caller's buffer be filled without
+    # an intermediate here (it is what lets a caller's buffer be filled
+    # without an intermediate copy), and `IO[bytes]` does not promise it.
+    # Both backings in use — a `SpooledTemporaryFile` and a pipe opened
+    # by `os.fdopen` — do.
 
     def read(self, size: int = -1, /) -> bytes: ...
     def readinto(self, buffer: WriteableBuffer, /) -> int: ...
@@ -34,11 +35,13 @@ class _Backing(Protocol):
 
 
 class EntryStream(io.BufferedIOBase):
-    """A binary file-like object over one entry's contents.
-
-    Its own class rather than a bare `SpooledTemporaryFile`: the backing is an
-    implementation detail that may change, and callers should not depend on it.
     """
+    A binary file-like object over one entry's contents.
+    """
+
+    # Its own class rather than a bare `SpooledTemporaryFile`: the backing
+    # is an implementation detail that may change, and callers should not
+    # depend on it.
 
     def __init__(self, backing: _Backing) -> None:
         self._backing = backing
@@ -49,7 +52,7 @@ class EntryStream(io.BufferedIOBase):
         write_into: Callable[[IO[bytes]], None],
         *,
         max_in_memory: int = MAX_IN_MEMORY,
-    ) -> EntryStream:
+    ) -> 'EntryStream':
         """Fill a fresh stream by handing a sink to `write_into`."""
         backing: SpooledTemporaryFile[bytes] = SpooledTemporaryFile(
             max_size=max_in_memory
@@ -67,20 +70,22 @@ class EntryStream(io.BufferedIOBase):
             raise ValueError("I/O operation on closed file")
 
     def _took(self, n: int, *, exhausted: bool) -> None:
-        """`n` bytes just came out of the backing store.
-
-        The single hook every way of reading passes through — `read`, `read1`,
-        `readinto`, and everything `io` builds on top of them. Nothing to do
-        here; `_PipeStream` overrides it, and overriding it is all it needs.
-        `exhausted` is true when that read reached the end of the data.
         """
+        `n` bytes just came out of the backing store.
+        """
+
+        # The single hook every way of reading passes through — `read`, `read1`,
+        # `readinto`, and everything `io` builds on top of them. Nothing to do
+        # here; `_PipeStream` overrides it, and overriding it is all it needs.
+        # `exhausted` is true when that read reached the end of the data.
 
     def read(self, size: int | None = -1) -> bytes:
         """Read up to `size` bytes; all of it when `size` is negative."""
         return self._read_chunk(-1 if size is None else size)
 
     def read1(self, size: int = -1) -> bytes:
-        """Read up to `size` bytes with a single call to the backing store.
+        """
+        Read up to `size` bytes with a single call to the backing store.
 
         Required by `io.BufferedIOBase` so the stream can be wrapped in
         `io.TextIOWrapper` (e.g. to read a text entry line by line).
@@ -88,6 +93,9 @@ class EntryStream(io.BufferedIOBase):
         return self._read_chunk(size)
 
     def _read_chunk(self, size: int) -> bytes:
+        """
+        Read up to `size` bytes with a single call to the backing store.
+        """
         self._check_open()
         data = self._backing.read(size)
         # A negative size reads until EOF in one call — that call is itself
@@ -128,7 +136,8 @@ class EntryStream(io.BufferedIOBase):
 
 
 class _PipeStream(EntryStream):
-    """An entry stream fed live through an OS pipe by a worker thread.
+    """
+    An entry stream fed live through an OS pipe by a worker thread.
 
     Same reading surface as `EntryStream`, three differences that follow from
     the backing being a pipe: it does not rewind, memory stays flat however

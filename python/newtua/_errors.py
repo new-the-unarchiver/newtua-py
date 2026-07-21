@@ -1,10 +1,9 @@
-"""Exception hierarchy for newtua.
+"""
+Exception hierarchy for newtua.
 
 The classes mirror the engine's own error variants, so callers can branch on
 the kind of failure instead of parsing message text.
 """
-
-from __future__ import annotations
 
 from typing import NoReturn
 
@@ -54,7 +53,8 @@ class UnsafePathError(NewtuaError):
 
 
 class EntryNotFoundError(KeyError):
-    """No entry with that name.
+    """
+    No entry with that name.
 
     Inherits `KeyError` only, so code around `archive["name"]` reads exactly
     like code around a dict.
@@ -75,7 +75,8 @@ _BY_KIND: dict[str, type[BaseException]] = {
 
 
 def raise_for(exc: BaseException) -> NoReturn:
-    """Re-raise an error from the compiled module as its typed counterpart.
+    """
+    Re-raise an error from the compiled module as its typed counterpart.
 
     Falls back to `NewtuaError` for a kind this version does not know, so a
     newer engine never surfaces as a bare, unrecognised exception.

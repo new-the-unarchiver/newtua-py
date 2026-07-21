@@ -1,10 +1,9 @@
-"""Progress events reported while extracting.
+"""
+Progress events reported while extracting.
 
 Separate classes rather than one class with optional fields: `match` narrows the
 type, so a handler can reach `event.path` without a `None` check.
 """
-
-from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
@@ -21,7 +20,8 @@ __all__ = [
 
 
 class EventKind(StrEnum):
-    """Which kind of progress event this is.
+    """
+    Which kind of progress event this is.
 
     The values are the engine's own tags, not a second vocabulary alongside
     them: `event_from_raw` looks the incoming tag up here, so a tag the enum
@@ -65,24 +65,42 @@ class EntryFinished(ProgressEvent):
     kind: ClassVar[EventKind] = EventKind.FINISHED
 
 
+def _build_started(
+    index: int, path: str | None, written: int, size: int
+) -> EntryStarted:
+    """Build an `EntryStarted` event."""
+    return EntryStarted(index=index, path=PurePosixPath(path or ""), size=size)
+
+
+def _build_bytes(
+    index: int, path: str | None, written: int, size: int
+) -> BytesWritten:
+    """Build a `BytesWritten` event."""
+    return BytesWritten(index=index, written=written)
+
+
+def _build_finished(
+    index: int, path: str | None, written: int, size: int
+) -> EntryFinished:
+    """Build an `EntryFinished` event."""
+    return EntryFinished(index=index)
+
+
 #: The one table: each kind, and how to build its event from the five values
 #: the compiled module sends. Every class listed here carries the same kind as
 #: its key, so the enum and the dispatch can never drift apart.
 _BUILDERS: dict[EventKind, Callable[[int, str | None, int, int], ProgressEvent]] = {
-    EventKind.STARTED: lambda index, path, written, size: EntryStarted(
-        index=index, path=PurePosixPath(path or ""), size=size
-    ),
-    EventKind.BYTES: lambda index, path, written, size: BytesWritten(
-        index=index, written=written
-    ),
-    EventKind.FINISHED: lambda index, path, written, size: EntryFinished(index=index),
+    EventKind.STARTED: _build_started,
+    EventKind.BYTES: _build_bytes,
+    EventKind.FINISHED: _build_finished,
 }
 
 
 def event_from_raw(
     event: str, index: int, path: str | None, written: int, size: int
 ) -> ProgressEvent:
-    """Build an event object from the five values the compiled module sends.
+    """
+    Build an event object from the five values the compiled module sends.
 
     The Rust module and this code always ship together, so version mismatch
     is impossible for users. Only dev can introduce a new event type; we fail

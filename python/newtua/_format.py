@@ -1,20 +1,18 @@
 """Container formats the engine can recognise."""
 
-from __future__ import annotations
-
 from enum import StrEnum
 
 __all__ = ["Format"]
 
 
 class Format(StrEnum):
-    """Container format of an archive.
+    """
+    Container format of an archive.
 
     Compares equal to its own string, so `archive.format == "zip"` works as
     well as `archive.format is Format.ZIP`.
     """
 
-    SEVENZ = "7z"
     ALZ = "alz"
     APFS = "apfs"
     APK = "apk"
@@ -55,6 +53,7 @@ class Format(StrEnum):
     RAR = "rar"
     RAW = "raw"
     RPM = "rpm"
+    SEVENZ = "7z"
     SFX = "sfx"
     SQUASHFS = "squashfs"
     SQUEEZE = "squeeze"

@@ -2,7 +2,10 @@
 name = "newtua-py"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# 1.87, not the family's 1.85: `std::io::pipe` (used by the Windows streaming
+# path) is stable since 1.87. Only this binding needs it — the engine's MSRV is
+# unaffected. Wheels build on current stable, so end users never see this floor.
+rust-version = "1.87"
 license = "LGPL-3.0-or-later"
 description = "Python bindings for newtua, an in-process archive extractor. Built as a wheel, not a Rust dependency."
 readme = "README.md"

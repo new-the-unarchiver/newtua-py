@@ -1,7 +1,5 @@
 """One entry inside an archive."""
 
-from __future__ import annotations
-
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -27,17 +25,33 @@ class EntryKind(StrEnum):
 
 @dataclass(frozen=True)
 class Entry:
-    """Metadata for one entry, plus shortcuts to its contents.
+    """
+    Metadata for one entry, plus shortcuts to its contents.
 
-    `path` is normalised, decoded and convenient; `raw_name` is the undecoded
-    bytes exactly as the archive recorded them, which is what path-safety
-    checks must look at. It is `bytes` and not `str` on purpose: entry names
-    are not required to be valid UTF-8, and decoding one to inspect it would
-    destroy the very thing a safety check is looking for. Use
-    `Archive.detected_encoding` if you want to decode it yourself.
+    `path` is a normalised, decoded name for everyday use. `raw_name` is the
+    archive's original bytes — not necessarily valid UTF-8 — and is what
+    path-safety checks must inspect; decode via `Archive.detected_encoding`
+    if needed.
 
-    `index` is the entry's position in the archive. Names may repeat, so the
-    position — not the name — is what identifies an entry.
+    `index` uniquely identifies the entry: names may repeat.
+
+    ### Properties:
+    - `path`: the UTF-8 name
+    - `raw_name`: name as recorded in the archive
+    - `index`: uniquely identifies the entry: names may repeat
+    - `kind`: the entry's type (`EntryKind` - `FILE`, `DIR`, `SYMLINK`)
+    - `size`: the entry's size (in bytes)
+    - `is_encrypted`: whether the entry is encrypted
+    - `mode`: Unix permission bits or `None` if unavailable.
+    - `mtime`: the entry's modification time
+
+    ### Methods:
+    - `is_file()`: whether this entry is a regular file
+    - `is_dir()`: whether this entry is a directory
+    - `is_symlink()`: whether this entry is a symbolic link
+    - `read()`: read the whole entry into memory
+    - `open()`: open the entry as a file-like object
+    - `extract()`: extract the entry into a destination directory
     """
 
     index: int
@@ -67,6 +81,7 @@ class Entry:
         return self.kind is EntryKind.SYMLINK
 
     def _owner(self) -> Archive:
+        """The archive that owns this entry."""
         if self._archive is None:
             raise ValueError("this entry is not attached to an archive")
         return self._archive
