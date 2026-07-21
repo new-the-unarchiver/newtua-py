@@ -84,6 +84,25 @@ def test_unknown_backend_is_rejected(tmp_path):
         extract_many([(z, tmp_path / "out")], backend="nonsense")
 
 
+def test_extract_many_process_backend_maps_errors(tmp_path):
+    bad = tmp_path / "bad.zip"
+    bad.write_bytes(b"not an archive")
+    (result,) = extract_many(
+        [ExtractJob(archive=bad, dest=tmp_path / "out")], backend="process"
+    )
+    assert result.report is None
+    assert isinstance(result.error, newtua.UnknownFormatError)
+    assert isinstance(result.error, newtua.NewtuaError)
+
+
+def test_list_many_process_backend_maps_errors(tmp_path):
+    bad = tmp_path / "bad.zip"
+    bad.write_bytes(b"not an archive")
+    (result,) = list_many([bad], backend="process")
+    assert result.entries is None
+    assert isinstance(result.error, newtua.UnknownFormatError)
+
+
 def test_extract_many_cancel_stops_submitting(tmp_path):
     ev = threading.Event()
     ev.set()

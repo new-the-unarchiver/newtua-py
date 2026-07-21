@@ -77,18 +77,21 @@ def _extract_one(job: ExtractJob) -> Report:
     """Run one extraction via the GIL-releasing primitive. Module-level so the
     process backend (spawn) can pickle it."""
     raw_progress = _wrap_progress(job.progress) if job.progress is not None else None
-    r = _newtua.extract_path(
-        str(job.archive),
-        str(job.dest),
-        _selection_indices(job),
-        job.wrapper,
-        job.strict,
-        job.preserve,
-        raw_progress,
-        os.fspath(job.archive),
-        job.password,
-        job.encoding,
-    )
+    try:
+        r = _newtua.extract_path(
+            str(job.archive),
+            str(job.dest),
+            _selection_indices(job),
+            job.wrapper,
+            job.strict,
+            job.preserve,
+            raw_progress,
+            os.fspath(job.archive),
+            job.password,
+            job.encoding,
+        )
+    except Exception as exc:
+        raise _as_typed(exc)
     return Report(extracted=r.extracted, failed=r.failed, aborted=r.aborted)
 
 
@@ -187,7 +190,10 @@ class ListingResult:
 
 def _list_one(archive: _ArchiveRef, password: str | None, encoding: str | None) -> tuple[Entry, ...]:
     """List one archive's entries (metadata only). Module-level for pickling."""
-    raw, _, _ = _newtua.list_path(str(archive), password, encoding)
+    try:
+        raw, _, _ = _newtua.list_path(str(archive), password, encoding)
+    except Exception as exc:
+        raise _as_typed(exc)
     entries, _ = _entries_from_raw(raw, None)
     return entries
 
