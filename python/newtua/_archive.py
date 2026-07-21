@@ -112,6 +112,64 @@ def _human_size(n: int) -> str:
     return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
 
 
+def _entries_from_raw(
+    raw: Sequence["_newtua.Entry"], owner: "Archive | None"
+) -> tuple[tuple[Entry, ...], dict[PurePosixPath, Entry]]:
+    """Build the immutable entry tuple and the name→first-entry index.
+
+    `owner` is the back-reference stored on each entry: the sync `Archive` for
+    its own listing, `None` for `AsyncArchive` (its entries are metadata-only —
+    no blocking `entry.read()` reachable)."""
+    entries = tuple(
+        Entry(
+            index=i,
+            path=PurePosixPath(r.path),
+            raw_name=r.raw_name,
+            kind=_safe_kind(r.kind),
+            size=r.size,
+            is_encrypted=r.is_encrypted,
+            mode=r.mode,
+            mtime=_safe_mtime(r.mtime),
+            _archive=owner,
+        )
+        for i, r in enumerate(raw)
+    )
+    by_name: dict[PurePosixPath, Entry] = {}
+    for entry in entries:
+        by_name.setdefault(entry.path, entry)
+    return entries, by_name
+
+
+def _resolve_index(
+    entries: tuple[Entry, ...], ref: int | str | PurePosixPath | Entry
+) -> int:
+    """Position of an entry given a position, a name, or the entry itself."""
+    if isinstance(ref, int):
+        if not -len(entries) <= ref < len(entries):
+            raise IndexError(ref)
+        return ref % len(entries)
+    if isinstance(ref, Entry):
+        return ref.index
+    target = PurePosixPath(ref)
+    for entry in entries:
+        if entry.path == target:
+            return entry.index
+    raise EntryNotFoundError(str(ref))
+
+
+def _wrap_progress(
+    progress: Callable[[ProgressEvent], bool | None],
+) -> Callable[[str, int, str | None, int, int], bool | None]:
+    """Adapt a `ProgressEvent` callback to the raw 5-arg form the module calls."""
+
+    def raw_progress(
+        event: str, index: int, path: str | None, written: int, size: int
+    ) -> bool | None:
+        return progress(event_from_raw(event, index, path, written, size))
+
+    return raw_progress
+
+
 class Archive:
     """
     An archive opened for listing and extraction.
@@ -244,26 +302,7 @@ class Archive:
         if self._entries is None:
             reader = self._open()
             raw = reader.entries()
-            self._entries = tuple(
-                Entry(
-                    index=i,
-                    path=PurePosixPath(r.path),
-                    raw_name=r.raw_name,
-                    kind=_safe_kind(r.kind),
-                    size=r.size,
-                    is_encrypted=r.is_encrypted,
-                    mode=r.mode,
-                    mtime=_safe_mtime(r.mtime),
-                    _archive=self,
-                )
-                for i, r in enumerate(raw)
-            )
-            # Names in archives repeat, and the first such entry must
-            # be found by name — `setdefault` keeps the first one.
-            by_name: dict[PurePosixPath, Entry] = {}
-            for entry in self._entries:
-                by_name.setdefault(entry.path, entry)
-            self._by_name = by_name
+            self._entries, self._by_name = _entries_from_raw(raw, self)
         return self._entries
 
     # ── sequence protocol ────────────────────────────────────────────────
@@ -394,16 +433,7 @@ class Archive:
 
     def _index_of(self, ref: int | str | PurePosixPath | Entry) -> int:
         """Position of an entry, given a position, a name, or the entry itself."""
-        entries = self._listing()
-        if isinstance(ref, int):
-            if not -len(entries) <= ref < len(entries):
-                raise IndexError(ref)
-            return ref % len(entries)
-        # Take the position from the entry itself: searching by comparison
-        # is not possible — names repeat in archives, and the first one
-        # found would be returned.
-        entry = ref if isinstance(ref, Entry) else self[ref]
-        return entry.index
+        return _resolve_index(self._listing(), ref)
 
     def read(self, entry: int | str | PurePosixPath | Entry) -> bytes:
         """Read one entry entirely into memory."""
@@ -553,13 +583,7 @@ class Archive:
         name_source = self._wrapper_name_source()
 
         raw_progress: Callable[[str, int, str | None, int, int], bool | None] | None
-        raw_progress = None
-        if progress is not None:
-
-            def raw_progress(
-                event: str, index: int, path: str | None, written: int, size: int
-            ) -> bool | None:
-                return progress(event_from_raw(event, index, path, written, size))
+        raw_progress = _wrap_progress(progress) if progress is not None else None
 
         try:
             report = reader.extract(
