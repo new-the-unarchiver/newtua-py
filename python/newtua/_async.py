@@ -9,6 +9,7 @@ served synchronously — iterating entries is pure Python, never I/O.
 import asyncio
 import errno
 import os
+import sys
 from pathlib import Path, PurePosixPath
 from types import TracebackType
 from typing import BinaryIO, Callable, Iterator, Sequence, overload
@@ -25,8 +26,9 @@ from newtua._entry import Entry
 from newtua._errors import EntryNotFoundError, raise_for
 from newtua._events import ProgressEvent
 from newtua._format import Format
+from newtua._stream import _PipeStream
 
-__all__ = ["AsyncArchive"]
+__all__ = ["AsyncArchive", "AsyncEntryStream"]
 
 
 class AsyncArchive:
@@ -148,6 +150,67 @@ class AsyncArchive:
         return any(e.is_encrypted for e in self._entries)
 
     # ── async reading / extraction ───────────────────────────────────────
+    def open(self, entry: int | str | PurePosixPath | Entry) -> "_AsyncStreamCtx":
+        """Open one entry as an async, streamed, non-seekable file-like object.
+
+        Memory stays flat however large the entry is; the result does not
+        rewind. For a rewindable result, use `await ar.read(entry)`.
+        """
+        index = _resolve_index(self._entries, entry)
+        size = self._entries[index].size
+        return _AsyncStreamCtx(self, index, size)
+
+    def _open_pipe_sync(self, index: int, expected_size: int) -> _PipeStream:
+        """Create the underlying sync pipe stream from the backing path.
+
+        Mirrors `Archive._open_pipe_*` but drives the path-based primitives (no
+        held reader). Deliberately separate from the sync method — the sync path
+        is left untouched."""
+        assert self._path is not None
+        tempfile = self._sync._tempfile
+        if os.name == "posix":
+            read_fd, write_fd = os.pipe()
+            if tempfile is not None:
+                tempfile.hold()
+            try:
+                _newtua.open_stream_path(
+                    str(self._path), index, write_fd, self._password, self._encoding
+                )
+            except BaseException as exc:
+                os.close(read_fd)
+                os.close(write_fd)
+                if tempfile is not None:
+                    tempfile.release()
+                if isinstance(exc, Exception):
+                    raise_for(exc)
+                raise
+            return _PipeStream(
+                os.fdopen(read_fd, "rb"),
+                expected_size=expected_size,
+                on_close=None if tempfile is None else tempfile.release,
+            )
+        if os.name == "nt":
+            if not self._sync._has_own_path():
+                raise NotImplementedError(
+                    "stream is not supported for in-memory (bytes) or stream "
+                    "sources on Windows; use a file path"
+                )
+            if sys.platform != "win32":  # pragma: no cover - dispatched only on Windows
+                raise NotImplementedError("the Windows streaming path needs a Windows build")
+            import msvcrt
+
+            try:
+                handle = _newtua.open_stream_windows_path(
+                    str(self._path), index, self._password, self._encoding
+                )
+            except Exception as exc:
+                raise_for(exc)
+            fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+            return _PipeStream(
+                os.fdopen(fd, "rb"), expected_size=expected_size, on_close=None
+            )
+        raise NotImplementedError("async streaming needs POSIX pipes or Windows")
+
     async def read(self, entry: int | str | PurePosixPath | Entry) -> bytes:
         """Read one entry entirely into memory, off the loop."""
         index = _resolve_index(self._entries, entry)
@@ -193,3 +256,74 @@ class AsyncArchive:
         except Exception as exc:
             raise_for(exc)
         return Report(extracted=r.extracted, failed=r.failed, aborted=r.aborted)
+
+
+class AsyncEntryStream:
+    """Async, streamed view over one entry — the async twin of `EntryStream`.
+
+    Wraps the sync pipe stream and moves every blocking read off the loop.
+    Non-seekable; memory stays flat.
+    """
+
+    #: Default chunk size for async iteration.
+    CHUNK = 64 * 1024
+
+    def __init__(self, backing: _PipeStream) -> None:
+        self._backing = backing
+
+    async def read(self, size: int = -1) -> bytes:
+        """Read up to `size` bytes (all of it when negative), off the loop."""
+        return await asyncio.to_thread(self._backing.read, size)
+
+    def __aiter__(self) -> "AsyncEntryStream":
+        return self
+
+    async def __anext__(self) -> bytes:
+        chunk = await self.read(self.CHUNK)
+        if not chunk:
+            raise StopAsyncIteration
+        return chunk
+
+    async def aclose(self) -> None:
+        """Close the stream, off the loop (closing may release a temp file)."""
+        await asyncio.to_thread(self._backing.close)
+
+    async def __aenter__(self) -> "AsyncEntryStream":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.aclose()
+
+
+class _AsyncStreamCtx:
+    """Async context manager returned by `AsyncArchive.open`.
+
+    Opens the pipe (handshake) off the loop on `__aenter__`, yields the
+    `AsyncEntryStream`, closes it on `__aexit__`."""
+
+    def __init__(self, archive: "AsyncArchive", index: int, size: int) -> None:
+        self._archive = archive
+        self._index = index
+        self._size = size
+        self._stream: AsyncEntryStream | None = None
+
+    async def __aenter__(self) -> AsyncEntryStream:
+        backing = await asyncio.to_thread(
+            self._archive._open_pipe_sync, self._index, self._size
+        )
+        self._stream = AsyncEntryStream(backing)
+        return self._stream
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if self._stream is not None:
+            await self._stream.aclose()

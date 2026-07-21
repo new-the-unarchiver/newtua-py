@@ -78,3 +78,26 @@ def test_async_garbage_file_raises_typed_error(tmp_path):
     with pytest.raises(newtua.UnknownFormatError) as excinfo:
         run(main())
     assert isinstance(excinfo.value, newtua.UnknownFormatError)
+
+
+def test_async_stream_matches_sync_read():
+    async def main():
+        async with newtua.AsyncArchive(str(FIXTURES / "hello.7z")) as ar:
+            async with ar.open(0) as stream:
+                return await stream.read()
+
+    with newtua.Archive(str(FIXTURES / "hello.7z")) as sync:
+        assert run(main()) == sync.read(0)
+
+
+def test_async_stream_iterates_in_chunks():
+    async def main():
+        chunks = []
+        async with newtua.AsyncArchive(str(FIXTURES / "hello.7z")) as ar:
+            async with ar.open(0) as stream:
+                async for chunk in stream:
+                    chunks.append(chunk)
+        return b"".join(chunks)
+
+    with newtua.Archive(str(FIXTURES / "hello.7z")) as sync:
+        assert run(main()) == sync.read(0)
