@@ -64,6 +64,7 @@ class AsyncArchive:
         self._by_name: dict[PurePosixPath, Entry] = {}
         self._format: str | None = None
         self._detected_encoding: str | None = None
+        self._closed: bool = False
 
     async def __aenter__(self) -> "AsyncArchive":
         # Spilling bytes/stream to a temp file and reading the listing are both
@@ -100,6 +101,11 @@ class AsyncArchive:
         tb: TracebackType | None,
     ) -> None:
         self._sync.close()  # releases the tempfile claim, if any
+        self._closed = True
+
+    def _ensure_ready(self) -> None:
+        if self._path is None or self._closed:
+            raise ValueError("operation on an unopened or closed AsyncArchive")
 
     # ── sync sequence over cached metadata ───────────────────────────────
     def __len__(self) -> int:
@@ -156,6 +162,7 @@ class AsyncArchive:
         Memory stays flat however large the entry is; the result does not
         rewind. For a rewindable result, use `await ar.read(entry)`.
         """
+        self._ensure_ready()
         index = _resolve_index(self._entries, entry)
         size = self._entries[index].size
         return _AsyncStreamCtx(self, index, size)
@@ -213,6 +220,7 @@ class AsyncArchive:
 
     async def read(self, entry: int | str | PurePosixPath | Entry) -> bytes:
         """Read one entry entirely into memory, off the loop."""
+        self._ensure_ready()
         index = _resolve_index(self._entries, entry)
         try:
             return await asyncio.to_thread(
@@ -232,6 +240,7 @@ class AsyncArchive:
         progress: Callable[[ProgressEvent], bool | None] | None = None,
     ) -> Report:
         """Extract entries into `dest`, off the loop."""
+        self._ensure_ready()
         indices = (
             [_resolve_index(self._entries, ref) for ref in selection]
             if selection is not None

@@ -90,6 +90,12 @@ def test_async_stream_matches_sync_read():
         assert run(main()) == sync.read(0)
 
 
+def test_async_read_before_aenter_raises():
+    ar = newtua.AsyncArchive(str(FIXTURES / "hello.7z"))
+    with pytest.raises(ValueError, match="unopened or closed"):
+        run(ar.read(0))
+
+
 def test_async_stream_iterates_in_chunks():
     async def main():
         chunks = []

@@ -140,6 +140,8 @@ def test_extract_many_under_gevent(tmp_path):
     import gevent.monkey
     if not gevent.monkey.is_module_patched("threading"):
         pytest.skip("run this module under `python -m gevent.monkey ...` for full coverage")
+    from newtua._batch import _GeventExecutor, _make_executor
+    assert isinstance(_make_executor("thread", 4), _GeventExecutor)
     zips = [ExtractJob(archive=make_two_entry_zip(tmp_path / f"in{i}.zip"),
                        dest=tmp_path / f"out{i}") for i in range(2)]
     results = extract_many(zips, backend="thread")

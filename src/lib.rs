@@ -271,6 +271,7 @@ fn build_progress_fn(cb: Py<PyAny>) -> newtua_core::ProgressFn {
         };
         Python::attach(|py| match cb.call1(py, (event, index, path, bytes, size)) {
             Ok(ret) => match ret.extract::<bool>(py) {
+                // Returning False (and only False) cancels.
                 Ok(false) => Flow::Abort,
                 _ => Flow::Continue,
             },
