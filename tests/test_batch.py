@@ -5,7 +5,7 @@ import threading
 import pytest
 
 import newtua
-from newtua._batch import ExtractJob, extract_many, list_many  # B6 переведёт на `from newtua import list_many`
+from newtua import ExtractJob, extract_many, list_many
 from tests.conftest import make_two_entry_zip
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"

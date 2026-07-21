@@ -205,6 +205,45 @@ with newtua.Archive("big.zip") as ar:
 
 Обработчик получает один объект события за раз — `EntryStarted`, `BytesWritten` или `EntryFinished`. Верните `False` из обработчика, чтобы отменить распаковку на середине.
 
+## Параллелизм
+
+Много архивов разом (эффект «распаковать пачку»):
+
+```python
+import newtua
+
+results = newtua.extract_many(
+    [("a.zip", "out/a"), ("b.7z", "out/b")],
+    backend="thread",          # GIL отпускается → настоящие ядра; "process" — изоляция
+    on_result=lambda job, report: print(job.archive, report.extracted),
+)
+```
+
+Так же можно листать много архивов, не распаковывая:
+
+```python
+import newtua
+
+results = newtua.list_many(["a.zip", "b.7z", "c.rar"])
+for r in results:
+    if r.error is None:
+        print(r.archive, len(r.entries))
+```
+
+Один архив в asyncio (распаковка не морозит цикл):
+
+```python
+async with newtua.AsyncArchive("big.dmg") as ar:
+    async with ar.open("payload.bin") as stream:
+        async for chunk in stream:
+            ...
+    report = await ar.extract("out/")
+```
+
+Оговорки: колбэк `progress` вызывается из рабочего потока (в цикл — только через
+`loop.call_soon_threadsafe`); `backend="process"` не поддерживает `progress`; на
+Windows потоковый режим требует путь-источник (не `bytes`/поток).
+
 ## Ошибки
 
 Все ошибки движка наследуют `newtua.NewtuaError`:
