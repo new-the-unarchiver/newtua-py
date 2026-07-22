@@ -24,7 +24,7 @@ name = "_newtua"
 crate-type = ["cdylib"]
 
 [dependencies]
-newtua-core = "0.1.1"
+newtua-core = "0.2.0"
 # abi3-py311: one wheel per platform across Python >= 3.11. extension-module: do
 # not link libpython (symbols resolved at import) so `cargo build` needs no
 # Python lib and a bare `cargo clippy` just compiles the crate.

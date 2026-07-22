@@ -1245,9 +1245,9 @@ checksum = "85823fe2744a59efadb0de0ee9c97fc9eb81f0d7bedbe6ad0fb45d8cdb3796c9"
 
 [[package]]
 name = "newtua-core"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c07292ec6cd736269a9efce4930df9fae7f87e3850d7f7ca68e343d5c9320c08"
+checksum = "e91e11215498c2ab955d7983ba8eb595076137198f2f9830a13082da64a1039e"
 dependencies = [
  "ar",
  "backhand",
