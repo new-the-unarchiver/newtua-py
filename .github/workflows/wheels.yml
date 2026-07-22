@@ -168,10 +168,28 @@ jobs:
         with:
           subject-path: "dist/*"
       - uses: astral-sh/setup-uv@v7
+      # Asking about the version, not about the files. uv's own --check-url
+      # compares hashes, and two builds of the same commit are not
+      # byte-identical (zip timestamps, build host), so it reports a mismatch
+      # where a human sees the same release. PyPI refuses a second upload of a
+      # version anyway — this makes re-running a tag a quiet no-op instead of a
+      # red job.
+      - name: Is this version already on PyPI?
+        id: check
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            "https://pypi.org/pypi/newtua/$version/json")
+          if [ "$code" = "200" ]; then
+            echo "newtua $version is on PyPI already — nothing to upload."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish
-        # --check-url makes this idempotent: a file already on PyPI is skipped
-        # instead of failing the job. Re-running a tag, or tagging a version
-        # that was published by hand, then costs nothing.
-        run: uv publish --check-url https://pypi.org/simple/ dist/*
+        if: steps.check.outputs.published == 'false'
+        run: uv publish dist/*
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
