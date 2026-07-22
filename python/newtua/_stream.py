@@ -1,5 +1,9 @@
 """File-like access to a single archive entry."""
 
+# Same reason as in `_entry.py`: `WriteableBuffer` exists for the type checker
+# only, so the annotations naming it must not be evaluated at import time.
+from __future__ import annotations
+
 import io
 from tempfile import SpooledTemporaryFile
 from typing import IO, TYPE_CHECKING, Callable, Protocol

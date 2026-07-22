@@ -70,6 +70,10 @@ def extract_path(
     password: str | None = ...,
     encoding: str | None = ...,
 ) -> Report: ...
+# The next two exist in one build each — `open_stream_path` on Unix,
+# `open_stream_windows_path` on Windows — mirroring the methods above. Both are
+# declared here unconditionally, because a stub describes one module for every
+# platform; the Python layer picks between them on `os.name`.
 def open_stream_path(
     path: str,
     index: int,

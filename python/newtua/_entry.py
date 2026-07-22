@@ -1,5 +1,11 @@
 """One entry inside an archive."""
 
+# `Archive` below is imported for the type checker only, so the annotation
+# naming it must not be evaluated at import time. Python 3.14 defers
+# annotations by itself; on 3.11–3.13 — and 3.11 is the floor this package
+# declares — this line is what defers them.
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
