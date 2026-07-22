@@ -45,3 +45,13 @@ files = ["python/newtua", "tests/typing_sample.py"]
 [tool.ruff]
 target-version = "py311"
 src = ["python"]
+
+[tool.ruff.lint]
+# ruff's defaults, plus TC004. That one catches a name imported under
+# `if TYPE_CHECKING:` and then used in an annotation the interpreter evaluates
+# at import time — which raises NameError on Python 3.11-3.13 and nothing at
+# all on 3.14, where annotations are deferred by default. It is exactly the
+# kind of bug a 3.14 development machine cannot see, and it did ship once.
+# The fix is `from __future__ import annotations` in that one file — not in
+# every file, which is why this is a linter rule and not a convention.
+select = ["E4", "E7", "E9", "F", "TC004"]
