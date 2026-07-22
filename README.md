@@ -519,6 +519,8 @@ The checks to run: `python -m pytest`, `mypy`, `ruff check python tests`, `cargo
 maturin build --release
 ```
 
-**Release builds (in CI):** wheels for Windows x86_64, macOS arm64 + x86_64, and Linux manylinux x86_64 + aarch64 (musllinux optional), via `maturin-action`/cibuildwheel on GitHub Actions. Dependencies with C code (bzip2, xz, AES for 7z, libunrar) are built from source, so the build images need a C toolchain — especially for cross-building to aarch64.
+**Release builds** run from [`.github/workflows/wheels.yml`](.github/workflows/wheels.yml), triggered by a `v*` tag or by hand. It builds wheels for Linux manylinux x86_64 + aarch64, macOS arm64 + x86_64 and Windows x86_64, plus an sdist; then it installs each wheel and runs the suite against it on Python 3.11 and 3.13 — one abi3 wheel is supposed to cover both, and that step is what proves it does. Publishing to PyPI happens only on a tag, over trusted publishing (no API token).
+
+The dependencies with C code (bzip2, xz, AES for 7z, libunrar) are built from source, so a build image needs a C toolchain — which matters most when cross-building to aarch64. The workflow sets `LZMA_API_STATIC=1` for the same reason: without it `lzma-sys` links whichever liblzma the build host happens to have, and the wheel ends up needing a library the user may not have.
 
 > On the very newest CPython (3.14, say) building an abi3 extension may require `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` until PyO3 lists that interpreter as supported.

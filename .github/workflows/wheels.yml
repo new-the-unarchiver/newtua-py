@@ -1,0 +1,167 @@
+name: Wheels
+
+# Wheels are expensive to build, so this does not run on every push — ci.yml
+# already tests the package on all three OSes. This runs when a release is
+# actually being made (a `v*` tag) or when someone asks for it by hand.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Build liblzma from source instead of linking whatever the build host
+  # happens to have. Without this, lzma-sys finds a system liblzma via
+  # pkg-config and the wheel ends up depending on a library the user may not
+  # have. The other C dependencies (bzip2, AES for 7z, libunrar) already build
+  # from source, so this is the only one that needs saying.
+  LZMA_API_STATIC: "1"
+
+jobs:
+  # The platform set the README promises: Linux manylinux x86_64 + aarch64,
+  # macOS arm64 + x86_64, Windows x86_64. No 32-bit targets, and no
+  # free-threaded builds: the crate is built abi3-py311, which the
+  # free-threaded interpreter does not accept.
+  linux:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          # `auto` picks the manylinux image; for aarch64 that is a cross
+          # image carrying the C toolchain the codec dependencies need.
+          manylinux: auto
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-linux-${{ matrix.target }}
+          path: dist
+
+  macos:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64
+          - runner: macos-15-intel
+            target: x86_64
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-macos-${{ matrix.target }}
+          path: dist
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          architecture: x64
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x64
+          args: --release --out dist
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-windows-x86_64
+          path: dist
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-sdist
+          path: dist
+
+  # Every wheel is installed and the suite run against it, on the Python the
+  # package declares as its floor and on the newest release. abi3 means one
+  # wheel is supposed to cover both — this is what proves it does.
+  smoke-test:
+    needs: [linux, macos, windows]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Install the wheel for this platform
+        shell: bash
+        # --only-binary: the sdist may be sitting in the same folder, and
+        # building from it would test the wrong thing.
+        run: "pip install --no-index --only-binary=:all: --find-links dist newtua"
+      - name: Test the installed wheel
+        shell: bash
+        run: |
+          pip install pytest
+          pytest tests -q
+
+  publish:
+    name: Publish to PyPI
+    needs: [smoke-test, sdist]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    # No API token: PyPI trusted publishing authenticates this workflow by its
+    # OIDC identity. It has to be registered once on PyPI (project settings →
+    # publishing; for a first release, as a pending publisher) naming this
+    # repository and this workflow file.
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Generate artifact attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: "dist/*"
+      - uses: astral-sh/setup-uv@v7
+      - name: Publish
+        run: uv publish dist/*
