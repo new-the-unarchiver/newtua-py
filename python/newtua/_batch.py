@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any, Callable, Iterable, Sequence, TypeVar
 
@@ -25,10 +26,28 @@ from newtua._entry import Entry
 from newtua._errors import raise_for
 from newtua._events import ProgressEvent
 
-__all__ = ["ExtractJob", "BatchResult", "extract_many", "ListingResult", "list_many"]
+__all__ = [
+    "Backend",
+    "ExtractJob",
+    "BatchResult",
+    "extract_many",
+    "ListingResult",
+    "list_many",
+]
 
 _ArchiveRef = str | os.PathLike[str]
 _Selection = Sequence[int | str | PurePosixPath | Entry]
+
+
+class Backend(StrEnum):
+    """Where the batch tools run their work. A `StrEnum`, so it compares equal
+    to its plain-string value — passing `"thread"`/`"process"` also works."""
+
+    #: Real OS threads; extraction releases the GIL, so work runs on real cores.
+    #: Under gevent monkeypatching this transparently uses `gevent.threadpool`.
+    THREAD = "thread"
+    #: Separate processes; crash isolation, but no per-job `progress` callback.
+    PROCESS = "process"
 
 
 @dataclass(frozen=True)
@@ -182,7 +201,7 @@ def _run_backend(
 def extract_many(
     jobs: Iterable["ExtractJob | tuple[_ArchiveRef, _ArchiveRef]"],
     *,
-    backend: str = "thread",
+    backend: "Backend | str" = Backend.THREAD,
     max_workers: int | None = None,
     on_result: Callable[[ExtractJob, Report], None] | None = None,
     on_error: Callable[[ExtractJob, BaseException], None] | None = None,
@@ -247,7 +266,7 @@ def list_many(
     *,
     password: str | None = None,
     encoding: str | None = None,
-    backend: str = "thread",
+    backend: "Backend | str" = Backend.THREAD,
     max_workers: int | None = None,
     on_result: Callable[[_ArchiveRef, tuple[Entry, ...]], None] | None = None,
     on_error: Callable[[_ArchiveRef, BaseException], None] | None = None,

@@ -1,4 +1,5 @@
-"""Asyncio-facing archive: the sync engine, off the event loop.
+"""
+Asyncio-facing archive: the synchronous engine, off the event loop.
 
 Every byte-touching call is a stateless re-open from the backing path with the
 GIL released (see `_newtua.*_path`), so nothing freezes the loop and no
@@ -32,7 +33,8 @@ __all__ = ["AsyncArchive", "AsyncEntryStream"]
 
 
 class AsyncArchive:
-    """An archive opened for async listing and extraction.
+    """
+    An archive opened for asynchronous listing and extraction.
 
     ```python
     async with newtua.AsyncArchive("big.dmg") as ar:
@@ -157,22 +159,27 @@ class AsyncArchive:
 
     # ── async reading / extraction ───────────────────────────────────────
     def open(self, entry: int | str | PurePosixPath | Entry) -> "_AsyncStreamCtx":
-        """Open one entry as an async, streamed, non-seekable file-like object.
+        """
+        Open one entry as an async, streamed, non-seekable file-like object.
 
         Memory stays flat however large the entry is; the result does not
         rewind. For a rewindable result, use `await ar.read(entry)`.
         """
+
         self._ensure_ready()
         index = _resolve_index(self._entries, entry)
         size = self._entries[index].size
         return _AsyncStreamCtx(self, index, size)
 
     def _open_pipe_sync(self, index: int, expected_size: int) -> _PipeStream:
-        """Create the underlying sync pipe stream from the backing path.
+        """
+        Create the underlying sync pipe stream from the backing path.
 
         Mirrors `Archive._open_pipe_*` but drives the path-based primitives (no
         held reader). Deliberately separate from the sync method — the sync path
-        is left untouched."""
+        is left untouched.
+        """
+
         assert self._path is not None
         tempfile = self._sync._tempfile
         if os.name == "posix":
@@ -267,6 +274,7 @@ class AsyncArchive:
         return Report(extracted=r.extracted, failed=r.failed, aborted=r.aborted)
 
     def __reduce__(self) -> NoReturn:
+        """A guard method to prevent sending AsyncArchive to a different process."""
         raise TypeError(
             f"{type(self).__name__} objects cannot be sent to another process; "
             "pass the file path and open it inside the worker "
@@ -275,7 +283,8 @@ class AsyncArchive:
 
 
 class AsyncEntryStream:
-    """Async, streamed view over one entry — the async twin of `EntryStream`.
+    """
+    Async, streamed view over one entry — the asynchronous twin of `EntryStream`.
 
     Wraps the sync pipe stream and moves every blocking read off the loop.
     Non-seekable; memory stays flat.

@@ -11,6 +11,17 @@ from tests.conftest import make_two_entry_zip
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
 
+def test_backend_enum_compares_to_strings():
+    assert newtua.Backend.THREAD == "thread"
+    assert newtua.Backend.PROCESS == "process"
+
+
+def test_extract_many_accepts_backend_enum(tmp_path):
+    z = make_two_entry_zip(tmp_path / "in.zip")
+    (result,) = extract_many([(z, tmp_path / "out")], backend=newtua.Backend.THREAD)
+    assert result.error is None and result.report.extracted == 2
+
+
 def test_extract_many_unpacks_all(tmp_path):
     zips = []
     for i in range(4):
