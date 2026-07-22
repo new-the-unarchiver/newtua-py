@@ -151,13 +151,7 @@ jobs:
     needs: [smoke-test, sdist]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    # No API token: PyPI trusted publishing authenticates this workflow by its
-    # OIDC identity. It has to be registered once on PyPI (project settings →
-    # publishing; for a first release, as a pending publisher) naming this
-    # repository and this workflow file.
-    environment: pypi
     permissions:
-      id-token: write
       contents: write
       attestations: write
     steps:
@@ -172,4 +166,9 @@ jobs:
           subject-path: "dist/*"
       - uses: astral-sh/setup-uv@v7
       - name: Publish
-        run: uv publish dist/*
+        # --check-url makes this idempotent: a file already on PyPI is skipped
+        # instead of failing the job. Re-running a tag, or tagging a version
+        # that was published by hand, then costs nothing.
+        run: uv publish --check-url https://pypi.org/simple/ dist/*
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
