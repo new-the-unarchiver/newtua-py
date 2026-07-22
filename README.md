@@ -1,6 +1,6 @@
 # [New The Unarchiver](https://github.com/new-the-unarchiver) — archive extractor, Python edition
 
-> 🇷🇺 **По-русски:** [README_ru.md](README_ru.md)
+> 🇷🇺 **По-русски:** [README_ru.md](https://github.com/new-the-unarchiver/newtua-py/blob/main/README_ru.md)
 
 - [New The Unarchiver — archive extractor, Python edition](#new-the-unarchiver--archive-extractor-python-edition)
   - [Why New The Unarchiver](#why-new-the-unarchiver)
@@ -519,7 +519,7 @@ The checks to run: `python -m pytest`, `mypy`, `ruff check python tests`, `cargo
 maturin build --release
 ```
 
-**Release builds** run from [`.github/workflows/wheels.yml`](.github/workflows/wheels.yml), triggered by a `v*` tag or by hand. It builds wheels for Linux manylinux x86_64 + aarch64, macOS arm64 + x86_64 and Windows x86_64, plus an sdist; then it installs each wheel and runs the suite against it on Python 3.11 and 3.13 — one abi3 wheel is supposed to cover both, and that step is what proves it does. Publishing to PyPI happens only on a tag, over trusted publishing (no API token).
+**Release builds** run from [`.github/workflows/wheels.yml`](https://github.com/new-the-unarchiver/newtua-py/blob/main/.github/workflows/wheels.yml), triggered by a `v*` tag or by hand. It builds wheels for Linux manylinux x86_64 + aarch64, macOS arm64 + x86_64 and Windows x86_64, plus an sdist; then it installs each wheel and runs the suite against it on Python 3.11 and 3.13 — one abi3 wheel is supposed to cover both, and that step is what proves it does. Publishing to PyPI happens only on a tag, over trusted publishing (no API token).
 
 The dependencies with C code (bzip2, xz, AES for 7z, libunrar) are built from source, so a build image needs a C toolchain — which matters most when cross-building to aarch64. The workflow sets `LZMA_API_STATIC=1` for the same reason: without it `lzma-sys` links whichever liblzma the build host happens to have, and the wheel ends up needing a library the user may not have.
 
