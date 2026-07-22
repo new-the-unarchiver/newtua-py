@@ -37,6 +37,14 @@ module-name = "newtua._newtua"
 python-source = "python"
 features = ["pyo3/extension-module"]
 
+[tool.pytest.ini_options]
+# The tests import their shared helpers as `from tests.conftest import ...`,
+# which needs the repository root on sys.path. `python -m pytest` puts it there
+# and the bare `pytest` command does not — so the suite passed locally and
+# failed in CI. Saying it here makes the invocation stop mattering. It does not
+# shadow an installed newtua: the package lives in `python/`, not at the root.
+pythonpath = ["."]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
